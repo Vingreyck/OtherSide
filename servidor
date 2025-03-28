@@ -1,0 +1,180 @@
+import socket
+import threading
+import pyautogui
+import pickle
+import struct
+import cv2
+import numpy as np
+import platform
+import subprocess
+import os
+from PIL import ImageGrab
+
+class ServidorRemoto:
+    def __init__(self, host='0.0.0.0', port=9999):
+        self.host = host
+        self.port = port
+        self.servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.clientes = []
+        self.running = True
+        
+    def iniciar(self):
+        """Inicia o servidor e começa a aceitar conexões."""
+        try:
+            self.servidor.bind((self.host, self.port))
+            self.servidor.listen(5)
+            print(f"Servidor iniciado em {self.host}:{self.port}")
+            print(f"Endereço IP local: {self.obter_ip_local()}")
+            
+            while self.running:
+                cliente, endereco = self.servidor.accept()
+                print(f"Conexão aceita de {endereco}")
+                self.clientes.append(cliente)
+                
+                # Cria uma thread para cada cliente
+                thread_cliente = threading.Thread(target=self.gerenciar_cliente, args=(cliente, endereco))
+                thread_cliente.daemon = True
+                thread_cliente.start()
+                
+        except Exception as e:
+            print(f"Erro ao iniciar servidor: {e}")
+        finally:
+            self.encerrar()
+    
+    def gerenciar_cliente(self, cliente, endereco):
+        """Gerencia a comunicação com um cliente específico."""
+        try:
+            while self.running:
+                # Recebe comando do cliente
+                comando_raw = cliente.recv(1024)
+                if not comando_raw:
+                    break
+                
+                comando = comando_raw.decode('utf-8').strip()
+                print(f"Comando recebido de {endereco}: {comando}")
+                
+                # Processa o comando
+                if comando == "screenshot":
+                    self.enviar_screenshot(cliente)
+                elif comando.startswith("mouse_move"):
+                    _, x, y = comando.split()
+                    pyautogui.moveTo(int(x), int(y))
+                elif comando.startswith("mouse_click"):
+                    parts = comando.split()
+                    if len(parts) == 2:
+                        pyautogui.click(button=parts[1])
+                    else:
+                        pyautogui.click()
+                elif comando.startswith("keyboard"):
+                    _, tecla = comando.split(" ", 1)
+                    pyautogui.write(tecla)
+                elif comando.startswith("hotkey"):
+                    _, *teclas = comando.split()
+                    pyautogui.hotkey(*teclas)
+                elif comando.startswith("exec"):
+                    _, cmd = comando.split(" ", 1)
+                    resultado = self.executar_comando(cmd)
+                    self.enviar_texto(cliente, resultado)
+                elif comando == "info_sistema":
+                    info = self.obter_info_sistema()
+                    self.enviar_texto(cliente, info)
+                elif comando == "sair":
+                    break
+                
+        except Exception as e:
+            print(f"Erro na comunicação com {endereco}: {e}")
+        finally:
+            if cliente in self.clientes:
+                self.clientes.remove(cliente)
+            cliente.close()
+            print(f"Conexão com {endereco} encerrada")
+    
+    def enviar_screenshot(self, cliente):
+        """Captura e envia screenshot para o cliente."""
+        try:
+            # Captura screenshot
+            screenshot = ImageGrab.grab()
+            screenshot = np.array(screenshot)
+            screenshot = cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
+            
+            # Redimensiona para reduzir tamanho
+            altura, largura = screenshot.shape[:2]
+            escala = 0.5
+            screenshot = cv2.resize(screenshot, (int(largura * escala), int(altura * escala)))
+            
+            # Comprime a imagem
+            _, buffer = cv2.imencode('.jpg', screenshot, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            dados = buffer.tobytes()
+            
+            # Envia o tamanho dos dados seguido pelos dados da imagem
+            cliente.sendall(struct.pack("L", len(dados)) + dados)
+            
+        except Exception as e:
+            print(f"Erro ao enviar screenshot: {e}")
+    
+    def enviar_texto(self, cliente, texto):
+        """Envia texto para o cliente."""
+        try:
+            mensagem = texto.encode('utf-8')
+            tamanho = len(mensagem)
+            cliente.sendall(struct.pack("!I", tamanho) + mensagem)
+        except Exception as e:
+            print(f"Erro ao enviar texto: {e}")
+    
+    def obter_info_sistema(self):
+        """Obtém informações do sistema."""
+        info = f"Sistema Operacional: {platform.system()} {platform.release()}\n"
+        info += f"Processador: {platform.processor()}\n"
+        info += f"Nome da Máquina: {platform.node()}\n"
+        
+        # Informações adicionais específicas por sistema
+        if platform.system() == "Windows":
+            import wmi
+            c = wmi.WMI()
+            for os in c.Win32_OperatingSystem():
+                info += f"Memória Total: {float(os.TotalVisibleMemorySize) / 1048576:.2f} GB\n"
+                info += f"Memória Livre: {float(os.FreePhysicalMemory) / 1048576:.2f} GB\n"
+        elif platform.system() == "Linux":
+            try:
+                mem_info = subprocess.check_output("free -m", shell=True).decode('utf-8')
+                info += f"Informações de Memória:\n{mem_info}\n"
+            except:
+                pass
+        
+        return info
+    
+    def executar_comando(self, comando):
+        """Executa um comando no sistema e retorna a saída."""
+        try:
+            resultado = subprocess.check_output(comando, shell=True, stderr=subprocess.STDOUT)
+            return resultado.decode('utf-8')
+        except subprocess.CalledProcessError as e:
+            return f"Erro ao executar comando: {e.output.decode('utf-8')}"
+    
+    def obter_ip_local(self):
+        """Obtém o endereço IP local da máquina."""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except:
+            return "127.0.0.1"
+    
+    def encerrar(self):
+        """Encerra o servidor e todas as conexões."""
+        self.running = False
+        for cliente in self.clientes:
+            cliente.close()
+        self.servidor.close()
+        print("Servidor encerrado")
+
+if __name__ == "__main__":
+    servidor = ServidorRemoto()
+    try:
+        servidor.iniciar()
+    except KeyboardInterrupt:
+        print("\nServidor interrompido pelo usuário")
+        servidor.encerrar()
