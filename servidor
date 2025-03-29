@@ -9,8 +9,9 @@ import platform
 import subprocess
 from PIL import ImageGrab
 from queue import Queue
+import time
 
-class EnhancedRemoteServer:
+class OptimizedRemoteServer:
     def __init__(self, host='0.0.0.0', port=9999):
         self.host = host
         self.port = port
@@ -19,13 +20,24 @@ class EnhancedRemoteServer:
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         
-        # Client management
+        # Cliente management
         self.clients = []
         self.command_queue = Queue()
         
         # Control flags
         self.running = True
-        self.screenshot_interval = 0.1  # 10 fps
+        self.screenshot_interval = 0.2  # Reduzido para 5 FPS
+        
+        # Configurações de captura
+        self.scale_factor = 0.4  # Reduzido para 40% do tamanho original
+        self.jpeg_quality = 50   # Qualidade reduzida para menor tamanho
+        
+        # Configuração de tela e mouse
+        self.screen_size = None
+        self.client_screen_size = None
+        
+        # Desativa o failsafe do pyautogui (corrigido aqui)
+        pyautogui.FAILSAFE = False
     
     def start_server(self):
         """Inicia o servidor e aceita conexões."""
@@ -34,6 +46,10 @@ class EnhancedRemoteServer:
             self.server_socket.listen(5)
             print(f"Servidor iniciado em {self.host}:{self.port}")
             
+            # Obtém tamanho da tela do servidor
+            self.screen_size = pyautogui.size()
+            print(f"Tamanho da tela do servidor: {self.screen_size}")
+            
             # Thread para processamento de comandos
             command_thread = threading.Thread(target=self.process_commands)
             command_thread.daemon = True
@@ -41,6 +57,9 @@ class EnhancedRemoteServer:
             
             while self.running:
                 client_socket, address = self.server_socket.accept()
+                # Aumenta o buffer do socket
+                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)
+                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)
                 print(f"Conexão de {address}")
                 
                 client_thread = threading.Thread(target=self.handle_client, args=(client_socket,))
@@ -57,6 +76,10 @@ class EnhancedRemoteServer:
     def handle_client(self, client_socket):
         """Gerencia comunicação com cliente individual."""
         try:
+            # Recebe tamanho da tela do cliente primeiro
+            self.client_screen_size = self.receive_data(client_socket)
+            print(f"Tamanho da tela do cliente: {self.client_screen_size}")
+            
             # Thread para streaming de tela
             screen_thread = threading.Thread(target=self.continuous_screen_capture, args=(client_socket,))
             screen_thread.daemon = True
@@ -70,94 +93,165 @@ class EnhancedRemoteServer:
                     break
                 
                 # Processamento de diferentes tipos de comandos
-                if command.startswith('mouse_move'):
-                    _, x, y = command.split()
-                    self.command_queue.put(('mouse_move', (int(x), int(y))))
-                
-                elif command.startswith('mouse_click'):
-                    _, button = command.split()
-                    self.command_queue.put(('mouse_click', button))
-                
-                elif command.startswith('keyboard'):
-                    _, key = command.split()
-                    self.command_queue.put(('keyboard', key))
-                
-                elif command == 'system_info':
-                    info = self.get_system_info()
-                    self.send_data(client_socket, info)
-                
-                elif command.startswith('exec'):
-                    _, cmd = command.split(' ', 1)
-                    result = self.execute_command(cmd)
-                    self.send_data(client_socket, result)
+                if isinstance(command, str):
+                    if command.startswith('mouse_move'):
+                        try:
+                            _, x, y = command.split()
+                            # Converte coordenadas do cliente para servidor
+                            if self.client_screen_size and self.screen_size:
+                                x_ratio = self.screen_size[0] / (self.client_screen_size[0] * (1/self.scale_factor))
+                                y_ratio = self.screen_size[1] / (self.client_screen_size[1] * (1/self.scale_factor))
+                                x = int(float(x) * x_ratio)
+                                y = int(float(y) * y_ratio)
+                            self.command_queue.put(('mouse_move', (int(x), int(y))))
+                        except Exception as e:
+                            print(f"Erro no processamento de mouse_move: {e}")
+                    
+                    elif command.startswith('mouse_click'):
+                        try:
+                            _, button = command.split()
+                            self.command_queue.put(('mouse_click', button))
+                        except Exception as e:
+                            print(f"Erro no processamento de mouse_click: {e}")
+                    
+                    elif command.startswith('keyboard'):
+                        try:
+                            _, key = command.split()
+                            self.command_queue.put(('keyboard', key))
+                        except Exception as e:
+                            print(f"Erro no processamento de keyboard: {e}")
+                    
+                    elif command == 'system_info':
+                        info = self.get_system_info()
+                        self.send_data(client_socket, info)
+                    
+                    elif command.startswith('exec'):
+                        try:
+                            _, cmd = command.split(' ', 1)
+                            result = self.execute_command(cmd)
+                            self.send_data(client_socket, result)
+                        except Exception as e:
+                            print(f"Erro no processamento de exec: {e}")
+                    
+                    elif command.startswith('quality'):
+                        try:
+                            _, quality = command.split()
+                            if quality == "Baixa":
+                                self.scale_factor = 0.3
+                                self.jpeg_quality = 30
+                                self.screenshot_interval = 0.3
+                            elif quality == "Alta":
+                                self.scale_factor = 0.5
+                                self.jpeg_quality = 70
+                                self.screenshot_interval = 0.1
+                            else:  # Normal
+                                self.scale_factor = 0.4
+                                self.jpeg_quality = 50
+                                self.screenshot_interval = 0.2
+                            print(f"Qualidade alterada para: {quality}")
+                        except Exception as e:
+                            print(f"Erro no processamento de quality: {e}")
         
         except Exception as e:
             print(f"Erro no cliente: {e}")
         finally:
             client_socket.close()
-            self.clients.remove(client_socket)
+            if client_socket in self.clients:
+                self.clients.remove(client_socket)
     
     def continuous_screen_capture(self, client_socket):
-        """Captura contínua de tela."""
+        """Captura contínua de tela com otimizações."""
         try:
+            # Início da contagem de tempo para limitar quadros
+            last_capture_time = time.time()
+            
             while self.running:
-                # Captura tela
-                screen = ImageGrab.grab()
-                screen_np = np.array(screen)
-                
-                # Converte e comprime
-                screen_np = cv2.cvtColor(screen_np, cv2.COLOR_RGB2BGR)
-                scaled = cv2.resize(screen_np, (0,0), fx=0.5, fy=0.5)
-                
-                # Codifica a imagem
-                _, buffer = cv2.imencode('.jpg', scaled, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                
-                # Envia dados
-                self.send_data(client_socket, buffer)
-                
-                # Controla taxa de quadros
-                import time
-                time.sleep(self.screenshot_interval)
+                current_time = time.time()
+                # Verifica se já passou o intervalo necessário
+                if (current_time - last_capture_time) >= self.screenshot_interval:
+                    # Captura tela
+                    screen = ImageGrab.grab()
+                    screen_np = np.array(screen)
+                    
+                    # Converte e comprime
+                    screen_np = cv2.cvtColor(screen_np, cv2.COLOR_RGB2BGR)
+                    
+                    # Aplica escala reduzida
+                    scaled = cv2.resize(screen_np, (0,0), fx=self.scale_factor, fy=self.scale_factor)
+                    
+                    # Codifica a imagem com qualidade reduzida
+                    _, buffer = cv2.imencode('.jpg', scaled, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
+                    
+                    # Envia dados
+                    self.send_data(client_socket, buffer)
+                    
+                    # Atualiza o tempo da última captura
+                    last_capture_time = current_time
+                else:
+                    # Pequena pausa para não consumir CPU desnecessariamente
+                    time.sleep(0.01)
         
         except Exception as e:
             print(f"Erro na captura de tela: {e}")
     
     def process_commands(self):
-        """Processa comandos de controle."""
+        """Processa comandos de controle com prioridade."""
         while self.running:
             try:
-                command_type, data = self.command_queue.get(timeout=1)
+                # Obtém comando da fila, com timeout curto para não bloquear
+                command_type, data = self.command_queue.get(timeout=0.01)
                 
                 if command_type == 'mouse_move':
                     x, y = data
-                    pyautogui.moveTo(x, y)
+                    # Movimento do mouse otimizado
+                    pyautogui.moveTo(x, y, _pause=False)
                 
                 elif command_type == 'mouse_click':
-                    pyautogui.click(button=data)
+                    # Clique otimizado
+                    pyautogui.click(button=data, _pause=False)
                 
                 elif command_type == 'keyboard':
-                    pyautogui.write(data)
+                    pyautogui.write(data, _pause=False)
                 
                 self.command_queue.task_done()
             
             except Exception as e:
-                pass  # Fila vazia, continua
+                # Timeout ou fila vazia, continua sem erro
+                pass
     
     def send_data(self, connection, data):
-        """Envia dados serializados."""
-        serialized = pickle.dumps(data)
-        connection.send(struct.pack("Q", len(serialized)) + serialized)
+        """Envia dados serializados com verificação de conexão."""
+        try:
+            serialized = pickle.dumps(data)
+            connection.send(struct.pack("Q", len(serialized)) + serialized)
+        except:
+            # Em caso de erro na conexão, não faz nada
+            pass
     
     def receive_data(self, connection):
-        """Recebe dados serializados."""
+        """Recebe dados serializados com timeout."""
         try:
-            data_size = struct.unpack("Q", connection.recv(8))[0]
+            # Define timeout para evitar bloqueio
+            connection.settimeout(1.0)
+            header = connection.recv(8)
+            if not header:
+                return None
+                
+            data_size = struct.unpack("Q", header)[0]
+            
+            # Restaura timeout padrão para recebimento de pacotes maiores
+            connection.settimeout(None)
+            
             data = b""
             while len(data) < data_size:
-                packet = connection.recv(data_size - len(data))
+                packet = connection.recv(min(data_size - len(data), 4096))  # Tamanho máximo de pacote
+                if not packet:
+                    return None
                 data += packet
+                
             return pickle.loads(data)
-        except:
+        except Exception as e:
+            print(f"Erro ao receber dados: {e}")
             return None
     
     def get_system_info(self):
@@ -172,7 +266,9 @@ class EnhancedRemoteServer:
     def execute_command(self, command):
         """Executa comando no sistema."""
         try:
-            return subprocess.check_output(command, shell=True).decode()
+            return subprocess.check_output(command, shell=True, timeout=5).decode()
+        except subprocess.TimeoutExpired:
+            return "Comando excedeu tempo limite de 5 segundos"
         except Exception as e:
             return str(e)
     
@@ -180,9 +276,12 @@ class EnhancedRemoteServer:
         """Encerra o servidor."""
         self.running = False
         for client in self.clients:
-            client.close()
+            try:
+                client.close()
+            except:
+                pass
         self.server_socket.close()
 
 if __name__ == "__main__":
-    server = EnhancedRemoteServer()
+    server = OptimizedRemoteServer()
     server.start_server()

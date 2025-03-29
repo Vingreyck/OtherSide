@@ -8,8 +8,9 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 from PIL import Image, ImageTk
 import io
+import time
 
-class EnhancedRemoteClient:
+class OptimizedRemoteClient:
     def __init__(self, root):
         self.root = root
         self.root.title("Enhanced Remote Control Client")
@@ -19,6 +20,12 @@ class EnhancedRemoteClient:
         self.socket = None
         self.connected = False
         self.receive_thread = None
+        
+        # Variáveis de controle
+        self.last_mouse_move = 0
+        self.mouse_throttle = 0.05  # 50ms entre movimentos do mouse
+        self.screen_buffer = None
+        self.last_screen_update = 0
         
         # Configurações de interface
         self.create_interface()
@@ -65,6 +72,14 @@ class EnhancedRemoteClient:
         control_frame = ttk.LabelFrame(main_frame, text="Controles")
         control_frame.pack(fill=tk.X, padx=5, pady=5)
         
+        # Controle de qualidade
+        ttk.Label(control_frame, text="Qualidade:").grid(row=0, column=0, padx=5, pady=5)
+        self.quality_var = tk.StringVar(value="Normal")
+        quality_combo = ttk.Combobox(control_frame, textvariable=self.quality_var, 
+                                     values=["Baixa", "Normal", "Alta"], width=8, state="readonly")
+        quality_combo.grid(row=0, column=1, padx=5, pady=5)
+        quality_combo.bind("<<ComboboxSelected>>", self.change_quality)
+        
         # Botões de controle
         control_buttons = [
             ("Informações do Sistema", self.get_system_info),
@@ -73,7 +88,7 @@ class EnhancedRemoteClient:
         
         for i, (text, command) in enumerate(control_buttons):
             btn = ttk.Button(control_frame, text=text, command=command)
-            btn.grid(row=0, column=i, padx=5, pady=5)
+            btn.grid(row=0, column=i+2, padx=5, pady=5)
         
         # Console de log
         log_frame = ttk.LabelFrame(main_frame, text="Log")
@@ -106,8 +121,18 @@ class EnhancedRemoteClient:
         
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            
+            # Aumenta os buffers de rede
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)
+            
             self.socket.connect((host, port))
             self.connected = True
+            
+            # Envia o tamanho da tela para o servidor
+            screen_width = self.canvas.winfo_width()
+            screen_height = self.canvas.winfo_height()
+            self.send_data((screen_width, screen_height))
             
             # Atualiza interface
             self.connect_button.config(text="Desconectar")
@@ -167,16 +192,23 @@ class EnhancedRemoteClient:
                 # Recebe dados
                 data = b""
                 while len(data) < data_size:
-                    packet = self.socket.recv(data_size - len(data))
+                    packet = self.socket.recv(min(data_size - len(data), 4096))
+                    if not packet:
+                        raise ConnectionError("Conexão fechada")
                     data += packet
                 
                 # Desserializa dados
                 decoded_data = pickle.loads(data)
                 
                 # Processa dados recebidos
-                if isinstance(decoded_data, np.ndarray):
-                    # É uma imagem
-                    self.display_screen(decoded_data)
+                if isinstance(decoded_data, (bytes, np.ndarray)):
+                    # É uma imagem - armazenar no buffer
+                    self.screen_buffer = decoded_data
+                    # Atualizar a tela a cada 50ms (20 FPS máximo)
+                    current_time = time.time()
+                    if current_time - self.last_screen_update >= 0.05:
+                        self.display_screen(decoded_data)
+                        self.last_screen_update = current_time
                 elif isinstance(decoded_data, (dict, str)):
                     # É uma mensagem ou informação
                     self.log(str(decoded_data))
@@ -199,6 +231,7 @@ class EnhancedRemoteClient:
             imgtk = ImageTk.PhotoImage(image=img)
             
             # Exibe no canvas
+            self.canvas.config(width=img.width, height=img.height)
             self.canvas.delete("all")
             self.canvas.create_image(0, 0, anchor=tk.NW, image=imgtk)
             self.canvas.image = imgtk  # Mantém referência
@@ -207,9 +240,13 @@ class EnhancedRemoteClient:
             self.log(f"Erro ao exibir imagem: {e}")
     
     def on_mouse_move(self, event):
-        """Envia evento de movimento do mouse."""
+        """Envia evento de movimento do mouse com throttling."""
         if self.connected:
-            self.send_data(f"mouse_move {event.x} {event.y}")
+            current_time = time.time()
+            # Limita envio de eventos de mouse a cada 50ms
+            if current_time - self.last_mouse_move >= self.mouse_throttle:
+                self.send_data(f"mouse_move {event.x} {event.y}")
+                self.last_mouse_move = current_time
     
     def send_mouse_click(self, button):
         """Envia clique do mouse."""
@@ -227,6 +264,14 @@ class EnhancedRemoteClient:
         """Solicita informações do sistema."""
         if self.connected:
             self.send_data("system_info")
+    
+    def change_quality(self, event):
+        """Altera a qualidade da transmissão."""
+        quality = self.quality_var.get()
+        if self.connected:
+            # Envia comando de qualidade para o servidor
+            self.send_data(f"quality {quality}")
+            self.log(f"Qualidade alterada para: {quality}")
     
     def open_command_dialog(self):
         """Abre diálogo para executar comando."""
@@ -259,7 +304,12 @@ class EnhancedRemoteClient:
 
 def main():
     root = tk.Tk()
-    app = EnhancedRemoteClient(root)
+    app = OptimizedRemoteClient(root)
+    
+    # Configura evento para após o carregamento completo da janela
+    root.update()
+    root.deiconify()
+    
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
 
