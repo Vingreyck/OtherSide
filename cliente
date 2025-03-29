@@ -7,152 +7,141 @@ import numpy as np
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 from PIL import Image, ImageTk
-import io
 import time
 
-class OptimizedRemoteClient:
+class RemoteClient:
     def __init__(self, root):
         self.root = root
-        self.root.title("Enhanced Remote Control Client")
+        self.root.title("Remote Control Client")
         self.root.geometry("1200x800")
         
-        # Variáveis de conexão
+        # Variáveis de conexão e controle
         self.socket = None
         self.connected = False
         self.receive_thread = None
         self.heartbeat_thread = None
-        
-        # Variáveis de controle
-        self.last_mouse_move = 0
-        self.mouse_throttle = 0.05  # 50ms entre movimentos do mouse
         self.screen_buffer = None
+        self.last_mouse_move = 0
+        self.mouse_throttle = 0.05
         self.last_screen_update = 0
         
-        # Configurações de interface
+        # Rastreamento da escala real
+        self.server_width = 0  # Largura real do servidor
+        self.server_height = 0  # Altura real do servidor
+        self.scale_x = 1.0  # Fator de escala horizontal
+        self.scale_y = 1.0  # Fator de escala vertical
+        
+        # Configurar interface
         self.create_interface()
     
     def create_interface(self):
-        """Cria a interface gráfica do cliente."""
-        # Frame principal
+        """Interface gráfica simplificada"""
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         # Frame de conexão
-        connection_frame = ttk.LabelFrame(main_frame, text="Conexão")
-        connection_frame.pack(fill=tk.X, padx=5, pady=5)
+        conn_frame = ttk.LabelFrame(main_frame, text="Conexão")
+        conn_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        ttk.Label(connection_frame, text="Host:").grid(row=0, column=0, padx=5, pady=5)
-        self.host_entry = ttk.Entry(connection_frame, width=20)
+        # Entradas simplificadas
+        ttk.Label(conn_frame, text="Host:").grid(row=0, column=0, padx=5, pady=5)
+        self.host_entry = ttk.Entry(conn_frame, width=20)
         self.host_entry.insert(0, "localhost")
         self.host_entry.grid(row=0, column=1, padx=5, pady=5)
         
-        ttk.Label(connection_frame, text="Porta:").grid(row=0, column=2, padx=5, pady=5)
-        self.port_entry = ttk.Entry(connection_frame, width=8)
+        ttk.Label(conn_frame, text="Porta:").grid(row=0, column=2, padx=5, pady=5)
+        self.port_entry = ttk.Entry(conn_frame, width=8)
         self.port_entry.insert(0, "9999")
         self.port_entry.grid(row=0, column=3, padx=5, pady=5)
         
-        self.connect_button = ttk.Button(connection_frame, text="Conectar", command=self.toggle_connection)
+        self.connect_button = ttk.Button(conn_frame, text="Conectar", command=self.toggle_connection)
         self.connect_button.grid(row=0, column=4, padx=5, pady=5)
         
-        # Frame de visualização
+        # Frame de controles
+        control_frame = ttk.Frame(main_frame)
+        control_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Qualidade e botões
+        ttk.Label(control_frame, text="Qualidade:").pack(side=tk.LEFT, padx=5)
+        self.quality_var = tk.StringVar(value="Normal")
+        quality_combo = ttk.Combobox(control_frame, textvariable=self.quality_var, 
+                                     values=["Baixa", "Normal", "Alta"], width=8, state="readonly")
+        quality_combo.pack(side=tk.LEFT, padx=5)
+        quality_combo.bind("<<ComboboxSelected>>", self.change_quality)
+        
+        ttk.Button(control_frame, text="Info Sistema", command=self.get_system_info).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="Executar CMD", command=self.open_command_dialog).pack(side=tk.LEFT, padx=5)
+        
+        # Frame de visualização com barra de status
         view_frame = ttk.LabelFrame(main_frame, text="Tela Remota")
         view_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
+        # Adicionando status da escala na parte superior
+        self.status_label = ttk.Label(view_frame, text="Sem conexão")
+        self.status_label.pack(anchor=tk.W, padx=5, pady=2)
+        
+        # Canvas com scroll
+        canvas_frame = ttk.Frame(view_frame)
+        canvas_frame.pack(fill=tk.BOTH, expand=True)
+        
         # Canvas para exibir tela remota
-        self.canvas = tk.Canvas(view_frame, bg="black")
+        self.canvas = tk.Canvas(canvas_frame, bg="black")
         self.canvas.pack(fill=tk.BOTH, expand=True)
         
-        # Eventos de mouse e teclado
+        # Eventos
         self.canvas.bind("<Motion>", self.on_mouse_move)
         self.canvas.bind("<Button-1>", lambda e: self.send_mouse_click("left"))
         self.canvas.bind("<Button-3>", lambda e: self.send_mouse_click("right"))
         self.canvas.bind("<Key>", self.on_key_press)
         self.canvas.focus_set()
         
-        # Frame de controles
-        control_frame = ttk.LabelFrame(main_frame, text="Controles")
-        control_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        # Controle de qualidade
-        ttk.Label(control_frame, text="Qualidade:").grid(row=0, column=0, padx=5, pady=5)
-        self.quality_var = tk.StringVar(value="Normal")
-        quality_combo = ttk.Combobox(control_frame, textvariable=self.quality_var, 
-                                     values=["Baixa", "Normal", "Alta"], width=8, state="readonly")
-        quality_combo.grid(row=0, column=1, padx=5, pady=5)
-        quality_combo.bind("<<ComboboxSelected>>", self.change_quality)
-        
-        # Botões de controle
-        control_buttons = [
-            ("Informações do Sistema", self.get_system_info),
-            ("Executar Comando", self.open_command_dialog)
-        ]
-        
-        for i, (text, command) in enumerate(control_buttons):
-            btn = ttk.Button(control_frame, text=text, command=command)
-            btn.grid(row=0, column=i+2, padx=5, pady=5)
-        
-        # Console de log
+        # Console de log simplificado
         log_frame = ttk.LabelFrame(main_frame, text="Log")
         log_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        self.log_console = scrolledtext.ScrolledText(log_frame, height=10)
-        self.log_console.pack(fill=tk.BOTH, expand=True)
-        
-        # Desabilita controles inicialmente
-        self.set_control_state(False)
+        self.log_console = scrolledtext.ScrolledText(log_frame, height=6)
+        self.log_console.pack(fill=tk.BOTH)
     
     def log(self, message):
-        """Adiciona mensagem ao console de log."""
+        """Adiciona mensagem ao console"""
         self.log_console.config(state=tk.NORMAL)
         self.log_console.insert(tk.END, f"{time.strftime('%H:%M:%S')} - {message}\n")
         self.log_console.see(tk.END)
         self.log_console.config(state=tk.DISABLED)
     
     def toggle_connection(self):
-        """Alterna entre conectar e desconectar."""
+        """Alterna entre conectar e desconectar"""
         if not self.connected:
             self.connect()
         else:
             self.disconnect()
     
     def connect(self):
-        """Estabelece conexão com o servidor."""
+        """Estabelece conexão com o servidor"""
         host = self.host_entry.get()
         port = int(self.port_entry.get())
         
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            
-            # Aumenta os buffers de rede
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)
-            
-            # Define timeout para a conexão inicial
             self.socket.settimeout(10.0)
             
             self.log(f"Conectando a {host}:{port}...")
             self.socket.connect((host, port))
             self.connected = True
             
-            # Aguarda 100ms para garantir que a conexão esteja estabelecida
-            time.sleep(0.1)
+            # Solicita informações do servidor primeiro
+            self.send_data("get_screen_size")
             
-            # Envia o tamanho da tela para o servidor
-            screen_width = self.canvas.winfo_width()
-            screen_height = self.canvas.winfo_height()
-            self.send_data((screen_width, screen_height))
-            
-            # Atualiza interface
             self.connect_button.config(text="Desconectar")
-            self.set_control_state(True)
             self.log(f"Conectado a {host}:{port}")
             
-            # Inicia thread de recebimento
+            # Inicia threads
             self.receive_thread = threading.Thread(target=self.receive_data)
             self.receive_thread.daemon = True
             self.receive_thread.start()
             
-            # Inicia thread de heartbeat
             self.heartbeat_thread = threading.Thread(target=self.heartbeat)
             self.heartbeat_thread.daemon = True
             self.heartbeat_thread.start()
@@ -165,18 +154,17 @@ class OptimizedRemoteClient:
                 self.socket = None
     
     def heartbeat(self):
-        """Envia sinal de heartbeat periódico para manter a conexão ativa."""
+        """Envia heartbeat periódico"""
         while self.connected:
             try:
-                time.sleep(5)  # Envia a cada 5 segundos
+                time.sleep(5)
                 if self.connected:
                     self.send_data("heartbeat")
             except:
-                # Se falhar, a thread de recebimento detectará e desconectará
                 pass
     
     def disconnect(self):
-        """Encerra conexão com o servidor."""
+        """Encerra conexão"""
         self.connected = False
         
         if self.socket:
@@ -184,36 +172,27 @@ class OptimizedRemoteClient:
                 self.socket.close()
             except:
                 pass
-            
             self.socket = None
             
-        # Reseta interface
         self.connect_button.config(text="Conectar")
-        self.set_control_state(False)
         self.canvas.delete("all")
+        self.status_label.config(text="Sem conexão")
         self.log("Desconectado")
     
-    def set_control_state(self, enabled):
-        """Habilita/desabilita controles."""
-        state = tk.NORMAL if enabled else tk.DISABLED
-        # Adicione aqui outros controles que devem ser habilitados/desabilitados
-    
     def send_data(self, data):
-        """Envia dados serializados para o servidor."""
+        """Envia dados ao servidor"""
         if not self.connected or not self.socket:
             return False
         
         try:
             serialized = pickle.dumps(data)
-            
-            # Envia o tamanho dos dados primeiro
             header = struct.pack("Q", len(serialized))
             self.socket.sendall(header)
             
-            # Envia os dados em chunks para evitar problemas com pacotes grandes
+            # Envia em chunks
             bytes_sent = 0
             while bytes_sent < len(serialized):
-                chunk_size = min(32768, len(serialized) - bytes_sent)  # Envia 32KB por vez
+                chunk_size = min(32768, len(serialized) - bytes_sent)
                 self.socket.sendall(serialized[bytes_sent:bytes_sent + chunk_size])
                 bytes_sent += chunk_size
                 
@@ -224,48 +203,38 @@ class OptimizedRemoteClient:
             return False
     
     def receive_data(self):
-        """Recebe dados do servidor continuamente."""
+        """Recebe dados do servidor"""
         buffer_incomplete = False
         incomplete_data = b""
+        data_size = 0
         
         while self.connected:
             try:
                 if not buffer_incomplete:
-                    # Recebe tamanho dos dados
                     header = self.socket.recv(8)
                     if not header or len(header) < 8:
-                        if len(header) > 0:
-                            self.log(f"Cabeçalho incompleto: {len(header)} bytes")
                         raise ConnectionError("Cabeçalho incompleto ou conexão fechada")
                     
                     data_size = struct.unpack("Q", header)[0]
-                    
-                    # Verifica se o tamanho é razoável
                     if data_size > 100000000:  # Limite de 100MB
-                        self.log(f"Tamanho de dados excessivo: {data_size}")
                         raise ConnectionError("Tamanho de dados inválido")
                     
-                    # Recebe dados em chunks
                     data = b""
                     remaining = data_size
                 else:
-                    # Continua recebendo dados incompletos
                     data = incomplete_data
                     remaining = data_size - len(data)
                     buffer_incomplete = False
                 
-                # Define um timeout para cada operação de recebimento
                 self.socket.settimeout(10.0)
                 
                 start_time = time.time()
                 while remaining > 0:
-                    # Verifica se já passou muito tempo (30 segundos)
                     if time.time() - start_time > 30:
-                        self.log("Timeout de recebimento excedido")
                         raise socket.timeout("Timeout de recebimento excedido")
                     
                     try:
-                        chunk_size = min(remaining, 32768)  # Recebe no máximo 32KB por vez
+                        chunk_size = min(remaining, 32768)
                         chunk = self.socket.recv(chunk_size)
                         
                         if not chunk:
@@ -274,47 +243,56 @@ class OptimizedRemoteClient:
                         data += chunk
                         remaining -= len(chunk)
                     except socket.timeout:
-                        # Verifica se recebemos dados parciais
                         if len(data) > 0:
-                            # Salva os dados parciais e continua na próxima iteração
                             incomplete_data = data
                             buffer_incomplete = True
-                            self.log(f"Recebimento parcial: {len(data)}/{data_size} bytes")
                             break
                         else:
                             raise
                 
-                # Se recebemos dados incompletos, continue para a próxima iteração
                 if buffer_incomplete:
                     continue
                 
-                # Desserializa dados
+                # Processa dados recebidos
                 decoded_data = pickle.loads(data)
                 
-                # Processa dados recebidos
-                if isinstance(decoded_data, (bytes, bytearray, np.ndarray)):
-                    # É uma imagem - armazenar no buffer
+                if isinstance(decoded_data, dict) and "screen_size" in decoded_data:
+                    # Atualiza informações de tamanho e escala da tela
+                    self.server_width, self.server_height = decoded_data["screen_size"]
+                    self.update_scale_factors()
+                    self.log(f"Tela do servidor: {self.server_width}x{self.server_height}")
+                elif isinstance(decoded_data, (bytes, bytearray, np.ndarray)):
+                    # É uma imagem - atualizar na interface
                     self.screen_buffer = decoded_data
-                    # Atualizar a tela a cada 50ms (20 FPS máximo)
                     current_time = time.time()
                     if current_time - self.last_screen_update >= 0.05:
                         self.root.after(0, self.display_screen, decoded_data)
                         self.last_screen_update = current_time
                 elif isinstance(decoded_data, (dict, str)):
                     # É uma mensagem ou informação
-                    if decoded_data != "heartbeat_ok":  # Ignora respostas de heartbeat
-                        self.log(f"Mensagem do servidor: {decoded_data}")
+                    if decoded_data != "heartbeat_ok":
+                        self.log(f"Mensagem: {decoded_data}")
                 
             except socket.timeout:
                 self.log("Timeout de conexão - tentando continuar...")
-                # Continua tentando - o heartbeat deve reiniciar a comunicação
             except Exception as e:
                 self.log(f"Erro no recebimento: {e}")
                 self.disconnect()
                 break
     
+    def update_scale_factors(self):
+        """Atualiza os fatores de escala com base nos tamanhos atual do canvas"""
+        # Obtém tamanho atual do canvas
+        canvas_width = self.canvas.winfo_width()
+        canvas_height = self.canvas.winfo_height()
+        
+        if canvas_width > 1 and canvas_height > 1 and self.server_width > 0 and self.server_height > 0:
+            self.scale_x = self.server_width / canvas_width
+            self.scale_y = self.server_height / canvas_height
+            self.status_label.config(text=f"Servidor: {self.server_width}x{self.server_height} | Escala: {self.scale_x:.2f}x, {self.scale_y:.2f}y")
+    
     def display_screen(self, image_buffer):
-        """Exibe imagem recebida do servidor."""
+        """Exibe imagem recebida do servidor"""
         if not self.connected:
             return
             
@@ -328,55 +306,57 @@ class OptimizedRemoteClient:
             img = Image.fromarray(frame)
             imgtk = ImageTk.PhotoImage(image=img)
             
-            # Exibe no canvas
-            self.canvas.config(width=img.width, height=img.height)
+            # Exibe no canvas e atualiza escala
+            canvas_width, canvas_height = img.width, img.height
+            self.canvas.config(width=canvas_width, height=canvas_height)
             self.canvas.delete("all")
             self.canvas.create_image(0, 0, anchor=tk.NW, image=imgtk)
-            self.canvas.image = imgtk  # Mantém referência
+            self.canvas.image = imgtk
+            
+            # Atualiza fatores de escala
+            self.update_scale_factors()
             
         except Exception as e:
             self.log(f"Erro ao exibir imagem: {e}")
     
     def on_mouse_move(self, event):
-        """Envia evento de movimento do mouse com throttling."""
+        """Envia evento de movimento do mouse com coordenadas corrigidas"""
         if self.connected:
             current_time = time.time()
-            # Limita envio de eventos de mouse a cada 50ms
             if current_time - self.last_mouse_move >= self.mouse_throttle:
-                self.send_data(f"mouse_move {event.x} {event.y}")
+                # Aplica correção de escala às coordenadas do mouse
+                server_x = int(event.x * self.scale_x)
+                server_y = int(event.y * self.scale_y)
+                self.send_data(f"mouse_move {server_x} {server_y}")
                 self.last_mouse_move = current_time
     
     def send_mouse_click(self, button):
-        """Envia clique do mouse."""
+        """Envia clique do mouse"""
         if self.connected:
             self.send_data(f"mouse_click {button}")
     
     def on_key_press(self, event):
-        """Envia evento de teclado."""
-        if self.connected:
-            key = event.char
-            if key:
-                self.send_data(f"keyboard {key}")
+        """Envia evento de teclado"""
+        if self.connected and event.char:
+            self.send_data(f"keyboard {event.char}")
     
     def get_system_info(self):
-        """Solicita informações do sistema."""
+        """Solicita informações do sistema"""
         if self.connected:
             self.send_data("system_info")
     
     def change_quality(self, event):
-        """Altera a qualidade da transmissão."""
-        quality = self.quality_var.get()
+        """Altera a qualidade da transmissão"""
         if self.connected:
-            # Envia comando de qualidade para o servidor
+            quality = self.quality_var.get()
             self.send_data(f"quality {quality}")
-            self.log(f"Qualidade alterada para: {quality}")
+            self.log(f"Qualidade: {quality}")
     
     def open_command_dialog(self):
-        """Abre diálogo para executar comando."""
+        """Abre diálogo para executar comando"""
         if not self.connected:
             return
         
-        # Cria janela de diálogo
         dialog = tk.Toplevel(self.root)
         dialog.title("Executar Comando")
         dialog.geometry("400x150")
@@ -395,23 +375,16 @@ class OptimizedRemoteClient:
         ttk.Button(dialog, text="Executar", command=execute_command).pack(pady=10)
     
     def on_closing(self):
-        """Tratamento de fechamento da janela."""
+        """Tratamento de fechamento da janela"""
         if self.connected:
             self.disconnect()
         self.root.destroy()
 
 def main():
     root = tk.Tk()
-    app = OptimizedRemoteClient(root)
-    
-    # Configura evento para após o carregamento da janela
+    app = RemoteClient(root)
     root.update()
-    root.deiconify()
-    
-    # Configura evento de fechamento
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
-    
-    # Inicia o loop principal
     root.mainloop()
 
 if __name__ == "__main__":

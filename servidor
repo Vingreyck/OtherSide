@@ -11,44 +11,40 @@ from PIL import ImageGrab
 from queue import Queue
 import time
 
-class OptimizedRemoteServer:
+class RemoteServer:
     def __init__(self, host='0.0.0.0', port=9999):
         self.host = host
         self.port = port
         
-        # Socket configuration
+        # Configuração do socket
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         
-        # Cliente management
+        # Gerenciamento de clientes
         self.clients = []
         self.command_queue = Queue()
         
-        # Control flags
+        # Flags de controle
         self.running = True
-        self.screenshot_interval = 0.2  # Reduzido para 5 FPS
+        self.screenshot_interval = 0.2  # 5 FPS
         
         # Configurações de captura
-        self.scale_factor = 0.4  # Reduzido para 40% do tamanho original
-        self.jpeg_quality = 50   # Qualidade reduzida para menor tamanho
+        self.scale_factor = 0.4  # 40% do tamanho original
+        self.jpeg_quality = 50
         
-        # Configuração de tela e mouse
-        self.screen_size = None
-        self.client_screen_size = None
+        # Configuração de tela
+        self.screen_size = pyautogui.size()
         
-        # Desativa o failsafe do pyautogui (corrigido aqui)
+        # Desativa o failsafe do pyautogui
         pyautogui.FAILSAFE = False
     
     def start_server(self):
-        """Inicia o servidor e aceita conexões."""
+        """Inicia o servidor e aceita conexões"""
         try:
             self.server_socket.bind((self.host, self.port))
             self.server_socket.listen(5)
             print(f"Servidor iniciado em {self.host}:{self.port}")
-            
-            # Obtém tamanho da tela do servidor
-            self.screen_size = pyautogui.size()
-            print(f"Tamanho da tela do servidor: {self.screen_size}")
+            print(f"Tamanho da tela: {self.screen_size}")
             
             # Thread para processamento de comandos
             command_thread = threading.Thread(target=self.process_commands)
@@ -57,11 +53,9 @@ class OptimizedRemoteServer:
             
             while self.running:
                 client_socket, address = self.server_socket.accept()
-                # Aumenta o buffer do socket
                 client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)
                 client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)
-                # Define um timeout maior para o socket
-                client_socket.settimeout(10.0)  # 10 segundos de timeout
+                client_socket.settimeout(10.0)
                 print(f"Conexão de {address}")
                 
                 client_thread = threading.Thread(target=self.handle_client, args=(client_socket,))
@@ -76,12 +70,8 @@ class OptimizedRemoteServer:
             self.stop_server()
     
     def handle_client(self, client_socket):
-        """Gerencia comunicação com cliente individual."""
+        """Gerencia comunicação com cliente individual"""
         try:
-            # Recebe tamanho da tela do cliente primeiro
-            self.client_screen_size = self.receive_data(client_socket)
-            print(f"Tamanho da tela do cliente: {self.client_screen_size}")
-            
             # Thread para streaming de tela
             screen_thread = threading.Thread(target=self.continuous_screen_capture, args=(client_socket,))
             screen_thread.daemon = True
@@ -97,32 +87,31 @@ class OptimizedRemoteServer:
                 
                 # Processamento de diferentes tipos de comandos
                 if isinstance(command, str):
-                    if command.startswith('mouse_move'):
+                    if command == "get_screen_size":
+                        # Envia o tamanho real da tela do servidor para o cliente
+                        self.send_data(client_socket, {"screen_size": self.screen_size})
+                    
+                    elif command.startswith('mouse_move'):
                         try:
                             _, x, y = command.split()
-                            # Converte coordenadas do cliente para servidor
-                            if self.client_screen_size and self.screen_size:
-                                x_ratio = self.screen_size[0] / (self.client_screen_size[0] * (1/self.scale_factor))
-                                y_ratio = self.screen_size[1] / (self.client_screen_size[1] * (1/self.scale_factor))
-                                x = int(float(x) * x_ratio)
-                                y = int(float(y) * y_ratio)
-                            self.command_queue.put(('mouse_move', (int(x), int(y))))
+                            # As coordenadas já vêm mapeadas do cliente
+                            self.command_queue.put(('mouse_move', (int(float(x)), int(float(y)))))
                         except Exception as e:
-                            print(f"Erro no processamento de mouse_move: {e}")
+                            print(f"Erro em mouse_move: {e}")
                     
                     elif command.startswith('mouse_click'):
                         try:
                             _, button = command.split()
                             self.command_queue.put(('mouse_click', button))
                         except Exception as e:
-                            print(f"Erro no processamento de mouse_click: {e}")
+                            print(f"Erro em mouse_click: {e}")
                     
                     elif command.startswith('keyboard'):
                         try:
                             _, key = command.split()
                             self.command_queue.put(('keyboard', key))
                         except Exception as e:
-                            print(f"Erro no processamento de keyboard: {e}")
+                            print(f"Erro em keyboard: {e}")
                     
                     elif command == 'system_info':
                         info = self.get_system_info()
@@ -134,7 +123,7 @@ class OptimizedRemoteServer:
                             result = self.execute_command(cmd)
                             self.send_data(client_socket, result)
                         except Exception as e:
-                            print(f"Erro no processamento de exec: {e}")
+                            print(f"Erro em exec: {e}")
                     
                     elif command.startswith('quality'):
                         try:
@@ -153,9 +142,9 @@ class OptimizedRemoteServer:
                                 self.screenshot_interval = 0.2
                             print(f"Qualidade alterada para: {quality}")
                         except Exception as e:
-                            print(f"Erro no processamento de quality: {e}")
+                            print(f"Erro em quality: {e}")
+                    
                     elif command == 'heartbeat':
-                        # Responde ao heartbeat do cliente
                         self.send_data(client_socket, 'heartbeat_ok')
         
         except Exception as e:
@@ -170,27 +159,23 @@ class OptimizedRemoteServer:
                 pass
     
     def continuous_screen_capture(self, client_socket):
-        """Captura contínua de tela com otimizações."""
+        """Captura contínua de tela"""
         try:
-            # Início da contagem de tempo para limitar quadros
             last_capture_time = time.time()
             
             while self.running and client_socket in self.clients:
                 current_time = time.time()
-                # Verifica se já passou o intervalo necessário
                 if (current_time - last_capture_time) >= self.screenshot_interval:
                     try:
                         # Captura tela
                         screen = ImageGrab.grab()
                         screen_np = np.array(screen)
-                        
-                        # Converte e comprime
                         screen_np = cv2.cvtColor(screen_np, cv2.COLOR_RGB2BGR)
                         
-                        # Aplica escala reduzida
+                        # Redimensiona
                         scaled = cv2.resize(screen_np, (0,0), fx=self.scale_factor, fy=self.scale_factor)
                         
-                        # Codifica a imagem com qualidade reduzida
+                        # Comprime
                         _, buffer = cv2.imencode('.jpg', scaled, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
                         
                         # Envia dados
@@ -198,32 +183,27 @@ class OptimizedRemoteServer:
                         if not success:
                             break
                         
-                        # Atualiza o tempo da última captura
                         last_capture_time = current_time
                     except Exception as e:
-                        print(f"Erro durante captura: {e}")
+                        print(f"Erro na captura: {e}")
                         break
                 else:
-                    # Pequena pausa para não consumir CPU desnecessariamente
                     time.sleep(0.01)
         
         except Exception as e:
             print(f"Erro na captura de tela: {e}")
     
     def process_commands(self):
-        """Processa comandos de controle com prioridade."""
+        """Processa comandos de controle"""
         while self.running:
             try:
-                # Obtém comando da fila, com timeout curto para não bloquear
                 command_type, data = self.command_queue.get(timeout=0.01)
                 
                 if command_type == 'mouse_move':
                     x, y = data
-                    # Movimento do mouse otimizado
                     pyautogui.moveTo(x, y, _pause=False)
                 
                 elif command_type == 'mouse_click':
-                    # Clique otimizado
                     pyautogui.click(button=data, _pause=False)
                 
                 elif command_type == 'keyboard':
@@ -232,11 +212,11 @@ class OptimizedRemoteServer:
                 self.command_queue.task_done()
             
             except Exception as e:
-                # Timeout ou fila vazia, continua sem erro
+                # Timeout ou fila vazia
                 pass
     
     def send_data(self, connection, data):
-        """Envia dados serializados com verificação de conexão."""
+        """Envia dados serializados"""
         try:
             serialized = pickle.dumps(data)
             header = struct.pack("Q", len(serialized))
@@ -250,63 +230,52 @@ class OptimizedRemoteServer:
             return False
     
     def receive_data(self, connection):
-        """Recebe dados serializados com tratamento de erro aprimorado."""
+        """Recebe dados serializados"""
         try:
-            # Recebe o cabeçalho com o tamanho dos dados
             header = connection.recv(8)
             if not header or len(header) < 8:
-                print(f"Cabeçalho incompleto recebido: {len(header)} bytes")
                 return None
                 
             data_size = struct.unpack("Q", header)[0]
             
-            # Verifica se o tamanho dos dados é razoável
-            if data_size > 100000000:  # Limite de 100MB para evitar problemas
-                print(f"Tamanho de dados excessivo: {data_size} bytes")
+            if data_size > 100000000:  # Limite de 100MB
                 return None
             
-            # Recebe os dados em chunks
             data = b""
             remaining = data_size
             
             while remaining > 0:
-                # Define um timeout temporário para cada operação de recebimento
                 connection.settimeout(5.0)
-                
-                chunk_size = min(remaining, 32768)  # Recebe no máximo 32KB por vez
+                chunk_size = min(remaining, 32768)
                 chunk = connection.recv(chunk_size)
                 
                 if not chunk:
-                    print("Conexão fechada durante recebimento de dados")
                     return None
                 
                 data += chunk
                 remaining -= len(chunk)
             
-            # Restaura o timeout padrão
             connection.settimeout(10.0)
-            
-            # Desserializa os dados
             return pickle.loads(data)
         
         except socket.timeout:
-            print("Timeout ao receber dados")
             return None
         except Exception as e:
             print(f"Erro ao receber dados: {e}")
             return None
     
     def get_system_info(self):
-        """Obtém informações do sistema."""
+        """Obtém informações do sistema"""
         return {
             'os': platform.system(),
             'release': platform.release(),
             'processor': platform.processor(),
-            'machine': platform.machine()
+            'machine': platform.machine(),
+            'screen_size': self.screen_size
         }
     
     def execute_command(self, command):
-        """Executa comando no sistema."""
+        """Executa comando no sistema"""
         try:
             return subprocess.check_output(command, shell=True, timeout=5).decode()
         except subprocess.TimeoutExpired:
@@ -315,7 +284,7 @@ class OptimizedRemoteServer:
             return str(e)
     
     def stop_server(self):
-        """Encerra o servidor."""
+        """Encerra o servidor"""
         self.running = False
         for client in self.clients:
             try:
@@ -325,5 +294,5 @@ class OptimizedRemoteServer:
         self.server_socket.close()
 
 if __name__ == "__main__":
-    server = OptimizedRemoteServer()
+    server = RemoteServer()
     server.start_server()
