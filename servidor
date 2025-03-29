@@ -1,180 +1,188 @@
 import socket
 import threading
-import pyautogui
 import pickle
 import struct
 import cv2
 import numpy as np
+import pyautogui
 import platform
 import subprocess
-import os
 from PIL import ImageGrab
+from queue import Queue
 
-class ServidorRemoto:
+class EnhancedRemoteServer:
     def __init__(self, host='0.0.0.0', port=9999):
         self.host = host
         self.port = port
-        self.servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.clientes = []
+        
+        # Socket configuration
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        
+        # Client management
+        self.clients = []
+        self.command_queue = Queue()
+        
+        # Control flags
         self.running = True
-        
-    def iniciar(self):
-        """Inicia o servidor e começa a aceitar conexões."""
+        self.screenshot_interval = 0.1  # 10 fps
+    
+    def start_server(self):
+        """Inicia o servidor e aceita conexões."""
         try:
-            self.servidor.bind((self.host, self.port))
-            self.servidor.listen(5)
+            self.server_socket.bind((self.host, self.port))
+            self.server_socket.listen(5)
             print(f"Servidor iniciado em {self.host}:{self.port}")
-            print(f"Endereço IP local: {self.obter_ip_local()}")
+            
+            # Thread para processamento de comandos
+            command_thread = threading.Thread(target=self.process_commands)
+            command_thread.daemon = True
+            command_thread.start()
             
             while self.running:
-                cliente, endereco = self.servidor.accept()
-                print(f"Conexão aceita de {endereco}")
-                self.clientes.append(cliente)
+                client_socket, address = self.server_socket.accept()
+                print(f"Conexão de {address}")
                 
-                # Cria uma thread para cada cliente
-                thread_cliente = threading.Thread(target=self.gerenciar_cliente, args=(cliente, endereco))
-                thread_cliente.daemon = True
-                thread_cliente.start()
+                client_thread = threading.Thread(target=self.handle_client, args=(client_socket,))
+                client_thread.daemon = True
+                client_thread.start()
                 
-        except Exception as e:
-            print(f"Erro ao iniciar servidor: {e}")
-        finally:
-            self.encerrar()
-    
-    def gerenciar_cliente(self, cliente, endereco):
-        """Gerencia a comunicação com um cliente específico."""
-        try:
-            while self.running:
-                # Recebe comando do cliente
-                comando_raw = cliente.recv(1024)
-                if not comando_raw:
-                    break
-                
-                comando = comando_raw.decode('utf-8').strip()
-                print(f"Comando recebido de {endereco}: {comando}")
-                
-                # Processa o comando
-                if comando == "screenshot":
-                    self.enviar_screenshot(cliente)
-                elif comando.startswith("mouse_move"):
-                    _, x, y = comando.split()
-                    pyautogui.moveTo(int(x), int(y))
-                elif comando.startswith("mouse_click"):
-                    parts = comando.split()
-                    if len(parts) == 2:
-                        pyautogui.click(button=parts[1])
-                    else:
-                        pyautogui.click()
-                elif comando.startswith("keyboard"):
-                    _, tecla = comando.split(" ", 1)
-                    pyautogui.write(tecla)
-                elif comando.startswith("hotkey"):
-                    _, *teclas = comando.split()
-                    pyautogui.hotkey(*teclas)
-                elif comando.startswith("exec"):
-                    _, cmd = comando.split(" ", 1)
-                    resultado = self.executar_comando(cmd)
-                    self.enviar_texto(cliente, resultado)
-                elif comando == "info_sistema":
-                    info = self.obter_info_sistema()
-                    self.enviar_texto(cliente, info)
-                elif comando == "sair":
-                    break
-                
-        except Exception as e:
-            print(f"Erro na comunicação com {endereco}: {e}")
-        finally:
-            if cliente in self.clientes:
-                self.clientes.remove(cliente)
-            cliente.close()
-            print(f"Conexão com {endereco} encerrada")
-    
-    def enviar_screenshot(self, cliente):
-        """Captura e envia screenshot para o cliente."""
-        try:
-            # Captura screenshot
-            screenshot = ImageGrab.grab()
-            screenshot = np.array(screenshot)
-            screenshot = cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
-            
-            # Redimensiona para reduzir tamanho
-            altura, largura = screenshot.shape[:2]
-            escala = 0.5
-            screenshot = cv2.resize(screenshot, (int(largura * escala), int(altura * escala)))
-            
-            # Comprime a imagem
-            _, buffer = cv2.imencode('.jpg', screenshot, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            dados = buffer.tobytes()
-            
-            # Envia o tamanho dos dados seguido pelos dados da imagem
-            cliente.sendall(struct.pack("L", len(dados)) + dados)
-            
-        except Exception as e:
-            print(f"Erro ao enviar screenshot: {e}")
-    
-    def enviar_texto(self, cliente, texto):
-        """Envia texto para o cliente."""
-        try:
-            mensagem = texto.encode('utf-8')
-            tamanho = len(mensagem)
-            cliente.sendall(struct.pack("!I", tamanho) + mensagem)
-        except Exception as e:
-            print(f"Erro ao enviar texto: {e}")
-    
-    def obter_info_sistema(self):
-        """Obtém informações do sistema."""
-        info = f"Sistema Operacional: {platform.system()} {platform.release()}\n"
-        info += f"Processador: {platform.processor()}\n"
-        info += f"Nome da Máquina: {platform.node()}\n"
+                self.clients.append(client_socket)
         
-        # Informações adicionais específicas por sistema
-        if platform.system() == "Windows":
-            import wmi
-            c = wmi.WMI()
-            for os in c.Win32_OperatingSystem():
-                info += f"Memória Total: {float(os.TotalVisibleMemorySize) / 1048576:.2f} GB\n"
-                info += f"Memória Livre: {float(os.FreePhysicalMemory) / 1048576:.2f} GB\n"
-        elif platform.system() == "Linux":
+        except Exception as e:
+            print(f"Erro no servidor: {e}")
+        finally:
+            self.stop_server()
+    
+    def handle_client(self, client_socket):
+        """Gerencia comunicação com cliente individual."""
+        try:
+            # Thread para streaming de tela
+            screen_thread = threading.Thread(target=self.continuous_screen_capture, args=(client_socket,))
+            screen_thread.daemon = True
+            screen_thread.start()
+            
+            while self.running:
+                # Recebe comandos do cliente
+                command = self.receive_data(client_socket)
+                
+                if not command:
+                    break
+                
+                # Processamento de diferentes tipos de comandos
+                if command.startswith('mouse_move'):
+                    _, x, y = command.split()
+                    self.command_queue.put(('mouse_move', (int(x), int(y))))
+                
+                elif command.startswith('mouse_click'):
+                    _, button = command.split()
+                    self.command_queue.put(('mouse_click', button))
+                
+                elif command.startswith('keyboard'):
+                    _, key = command.split()
+                    self.command_queue.put(('keyboard', key))
+                
+                elif command == 'system_info':
+                    info = self.get_system_info()
+                    self.send_data(client_socket, info)
+                
+                elif command.startswith('exec'):
+                    _, cmd = command.split(' ', 1)
+                    result = self.execute_command(cmd)
+                    self.send_data(client_socket, result)
+        
+        except Exception as e:
+            print(f"Erro no cliente: {e}")
+        finally:
+            client_socket.close()
+            self.clients.remove(client_socket)
+    
+    def continuous_screen_capture(self, client_socket):
+        """Captura contínua de tela."""
+        try:
+            while self.running:
+                # Captura tela
+                screen = ImageGrab.grab()
+                screen_np = np.array(screen)
+                
+                # Converte e comprime
+                screen_np = cv2.cvtColor(screen_np, cv2.COLOR_RGB2BGR)
+                scaled = cv2.resize(screen_np, (0,0), fx=0.5, fy=0.5)
+                
+                # Codifica a imagem
+                _, buffer = cv2.imencode('.jpg', scaled, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                
+                # Envia dados
+                self.send_data(client_socket, buffer)
+                
+                # Controla taxa de quadros
+                import time
+                time.sleep(self.screenshot_interval)
+        
+        except Exception as e:
+            print(f"Erro na captura de tela: {e}")
+    
+    def process_commands(self):
+        """Processa comandos de controle."""
+        while self.running:
             try:
-                mem_info = subprocess.check_output("free -m", shell=True).decode('utf-8')
-                info += f"Informações de Memória:\n{mem_info}\n"
-            except:
-                pass
-        
-        return info
+                command_type, data = self.command_queue.get(timeout=1)
+                
+                if command_type == 'mouse_move':
+                    x, y = data
+                    pyautogui.moveTo(x, y)
+                
+                elif command_type == 'mouse_click':
+                    pyautogui.click(button=data)
+                
+                elif command_type == 'keyboard':
+                    pyautogui.write(data)
+                
+                self.command_queue.task_done()
+            
+            except Exception as e:
+                pass  # Fila vazia, continua
     
-    def executar_comando(self, comando):
-        """Executa um comando no sistema e retorna a saída."""
-        try:
-            resultado = subprocess.check_output(comando, shell=True, stderr=subprocess.STDOUT)
-            return resultado.decode('utf-8')
-        except subprocess.CalledProcessError as e:
-            return f"Erro ao executar comando: {e.output.decode('utf-8')}"
+    def send_data(self, connection, data):
+        """Envia dados serializados."""
+        serialized = pickle.dumps(data)
+        connection.send(struct.pack("Q", len(serialized)) + serialized)
     
-    def obter_ip_local(self):
-        """Obtém o endereço IP local da máquina."""
+    def receive_data(self, connection):
+        """Recebe dados serializados."""
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
+            data_size = struct.unpack("Q", connection.recv(8))[0]
+            data = b""
+            while len(data) < data_size:
+                packet = connection.recv(data_size - len(data))
+                data += packet
+            return pickle.loads(data)
         except:
-            return "127.0.0.1"
+            return None
     
-    def encerrar(self):
-        """Encerra o servidor e todas as conexões."""
+    def get_system_info(self):
+        """Obtém informações do sistema."""
+        return {
+            'os': platform.system(),
+            'release': platform.release(),
+            'processor': platform.processor(),
+            'machine': platform.machine()
+        }
+    
+    def execute_command(self, command):
+        """Executa comando no sistema."""
+        try:
+            return subprocess.check_output(command, shell=True).decode()
+        except Exception as e:
+            return str(e)
+    
+    def stop_server(self):
+        """Encerra o servidor."""
         self.running = False
-        for cliente in self.clientes:
-            cliente.close()
-        self.servidor.close()
-        print("Servidor encerrado")
+        for client in self.clients:
+            client.close()
+        self.server_socket.close()
 
 if __name__ == "__main__":
-    servidor = ServidorRemoto()
-    try:
-        servidor.iniciar()
-    except KeyboardInterrupt:
-        print("\nServidor interrompido pelo usuário")
-        servidor.encerrar()
+    server = EnhancedRemoteServer()
+    server.start_server()

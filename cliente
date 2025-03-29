@@ -1,322 +1,267 @@
 import socket
+import threading
+import pickle
 import struct
 import cv2
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 from PIL import Image, ImageTk
-import threading
-import time
+import io
 
-class ClienteRemoto:
+class EnhancedRemoteClient:
     def __init__(self, root):
         self.root = root
-        self.root.title("Cliente de Controle Remoto")
+        self.root.title("Enhanced Remote Control Client")
         self.root.geometry("1200x800")
-        self.root.protocol("WM_DELETE_WINDOW", self.encerrar)
         
+        # Variáveis de conexão
         self.socket = None
-        self.conectado = False
-        self.thread_recebimento = None
-        self.frame_original = None
-        self.escala_imagem = 1.0
-        self.ultima_posicao_mouse = (0, 0)
+        self.connected = False
+        self.receive_thread = None
         
-        self.criar_interface()
+        # Configurações de interface
+        self.create_interface()
     
-    def criar_interface(self):
+    def create_interface(self):
         """Cria a interface gráfica do cliente."""
         # Frame principal
-        frame_principal = ttk.Frame(self.root)
-        frame_principal.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         # Frame de conexão
-        frame_conexao = ttk.LabelFrame(frame_principal, text="Conexão")
-        frame_conexao.pack(fill=tk.X, padx=5, pady=5)
+        connection_frame = ttk.LabelFrame(main_frame, text="Conexão")
+        connection_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        ttk.Label(frame_conexao, text="Host:").grid(row=0, column=0, padx=5, pady=5)
-        self.entrada_host = ttk.Entry(frame_conexao, width=20)
-        self.entrada_host.insert(0, "localhost")
-        self.entrada_host.grid(row=0, column=1, padx=5, pady=5)
+        ttk.Label(connection_frame, text="Host:").grid(row=0, column=0, padx=5, pady=5)
+        self.host_entry = ttk.Entry(connection_frame, width=20)
+        self.host_entry.insert(0, "localhost")
+        self.host_entry.grid(row=0, column=1, padx=5, pady=5)
         
-        ttk.Label(frame_conexao, text="Porta:").grid(row=0, column=2, padx=5, pady=5)
-        self.entrada_porta = ttk.Entry(frame_conexao, width=8)
-        self.entrada_porta.insert(0, "9999")
-        self.entrada_porta.grid(row=0, column=3, padx=5, pady=5)
+        ttk.Label(connection_frame, text="Porta:").grid(row=0, column=2, padx=5, pady=5)
+        self.port_entry = ttk.Entry(connection_frame, width=8)
+        self.port_entry.insert(0, "9999")
+        self.port_entry.grid(row=0, column=3, padx=5, pady=5)
         
-        self.botao_conectar = ttk.Button(frame_conexao, text="Conectar", command=self.alternar_conexao)
-        self.botao_conectar.grid(row=0, column=4, padx=5, pady=5)
+        self.connect_button = ttk.Button(connection_frame, text="Conectar", command=self.toggle_connection)
+        self.connect_button.grid(row=0, column=4, padx=5, pady=5)
         
         # Frame de visualização
-        frame_visualizacao = ttk.LabelFrame(frame_principal, text="Visualização Remota")
-        frame_visualizacao.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        view_frame = ttk.LabelFrame(main_frame, text="Tela Remota")
+        view_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Canvas para exibir a tela remota
-        self.canvas = tk.Canvas(frame_visualizacao, bg="black")
+        # Canvas para exibir tela remota
+        self.canvas = tk.Canvas(view_frame, bg="black")
         self.canvas.pack(fill=tk.BOTH, expand=True)
         
-        # Adiciona eventos de mouse e teclado ao canvas
-        self.canvas.bind("<Motion>", self.evento_mouse_movimento)
-        self.canvas.bind("<Button-1>", lambda e: self.evento_mouse_clique("left"))
-        self.canvas.bind("<Button-3>", lambda e: self.evento_mouse_clique("right"))
-        self.canvas.bind("<Key>", self.evento_teclado)
-        self.canvas.bind("<KeyPress>", self.evento_teclado)
+        # Eventos de mouse e teclado
+        self.canvas.bind("<Motion>", self.on_mouse_move)
+        self.canvas.bind("<Button-1>", lambda e: self.send_mouse_click("left"))
+        self.canvas.bind("<Button-3>", lambda e: self.send_mouse_click("right"))
+        self.canvas.bind("<Key>", self.on_key_press)
         self.canvas.focus_set()
         
         # Frame de controles
-        frame_controles = ttk.LabelFrame(frame_principal, text="Controles")
-        frame_controles.pack(fill=tk.X, padx=5, pady=5)
+        control_frame = ttk.LabelFrame(main_frame, text="Controles")
+        control_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        self.botao_screenshot = ttk.Button(frame_controles, text="Atualizar Tela", 
-            command=lambda: self.enviar_comando("screenshot"))
-        self.botao_screenshot.grid(row=0, column=0, padx=5, pady=5)
+        # Botões de controle
+        control_buttons = [
+            ("Informações do Sistema", self.get_system_info),
+            ("Executar Comando", self.open_command_dialog)
+        ]
         
-        self.botao_info = ttk.Button(frame_controles, text="Informações do Sistema", 
-            command=lambda: self.enviar_comando("info_sistema"))
-        self.botao_info.grid(row=0, column=1, padx=5, pady=5)
+        for i, (text, command) in enumerate(control_buttons):
+            btn = ttk.Button(control_frame, text=text, command=command)
+            btn.grid(row=0, column=i, padx=5, pady=5)
         
-        ttk.Label(frame_controles, text="Comando:").grid(row=0, column=2, padx=5, pady=5)
-        self.entrada_comando = ttk.Entry(frame_controles, width=40)
-        self.entrada_comando.grid(row=0, column=3, padx=5, pady=5)
+        # Console de log
+        log_frame = ttk.LabelFrame(main_frame, text="Log")
+        log_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        self.botao_executar = ttk.Button(frame_controles, text="Executar", 
-            command=self.executar_comando_personalizado)
-        self.botao_executar.grid(row=0, column=4, padx=5, pady=5)
+        self.log_console = scrolledtext.ScrolledText(log_frame, height=10)
+        self.log_console.pack(fill=tk.BOTH, expand=True)
         
-        # Console de logs
-        frame_logs = ttk.LabelFrame(frame_principal, text="Console")
-        frame_logs.pack(fill=tk.X, padx=5, pady=5)
-        
-        self.console_log = scrolledtext.ScrolledText(frame_logs, height=10)
-        self.console_log.pack(fill=tk.BOTH, expand=True)
-        self.console_log.config(state=tk.DISABLED)
-        
-        # Desabilita os controles inicialmente
-        self.definir_estado_controles(False)
-        
-    def log(self, mensagem):
-        """Adiciona uma mensagem ao console de log."""
-        self.console_log.config(state=tk.NORMAL)
-        self.console_log.insert(tk.END, f"{mensagem}\n")
-        self.console_log.see(tk.END)
-        self.console_log.config(state=tk.DISABLED)
+        # Desabilita controles inicialmente
+        self.set_control_state(False)
     
-    def alternar_conexao(self):
-        """Conecta ou desconecta do servidor."""
-        if not self.conectado:
-            self.conectar()
+    def log(self, message):
+        """Adiciona mensagem ao console de log."""
+        self.log_console.config(state=tk.NORMAL)
+        self.log_console.insert(tk.END, f"{message}\n")
+        self.log_console.see(tk.END)
+        self.log_console.config(state=tk.DISABLED)
+    
+    def toggle_connection(self):
+        """Alterna entre conectar e desconectar."""
+        if not self.connected:
+            self.connect()
         else:
-            self.desconectar()
+            self.disconnect()
     
-    def conectar(self):
+    def connect(self):
         """Estabelece conexão com o servidor."""
-        host = self.entrada_host.get()
-        try:
-            porta = int(self.entrada_porta.get())
-        except ValueError:
-            self.log("Erro: Porta inválida")
-            return
+        host = self.host_entry.get()
+        port = int(self.port_entry.get())
         
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.connect((host, porta))
-            self.conectado = True
-            self.log(f"Conectado a {host}:{porta}")
-            self.botao_conectar.config(text="Desconectar")
-            self.definir_estado_controles(True)
+            self.socket.connect((host, port))
+            self.connected = True
             
-            # Inicia thread para receber dados
-            self.thread_recebimento = threading.Thread(target=self.thread_receber_dados)
-            self.thread_recebimento.daemon = True
-            self.thread_recebimento.start()
+            # Atualiza interface
+            self.connect_button.config(text="Desconectar")
+            self.set_control_state(True)
+            self.log(f"Conectado a {host}:{port}")
             
-            # Solicita screenshot inicial
-            self.enviar_comando("screenshot")
+            # Inicia thread de recebimento
+            self.receive_thread = threading.Thread(target=self.receive_data)
+            self.receive_thread.daemon = True
+            self.receive_thread.start()
             
         except Exception as e:
-            self.log(f"Erro ao conectar: {str(e)}")
-            if self.socket:
-                self.socket.close()
-                self.socket = None
+            self.log(f"Erro de conexão: {e}")
+            messagebox.showerror("Erro", str(e))
     
-    def desconectar(self):
-        """Encerra a conexão com o servidor."""
+    def disconnect(self):
+        """Encerra conexão com o servidor."""
         if self.socket:
             try:
-                self.enviar_comando("sair")
                 self.socket.close()
             except:
                 pass
-            finally:
-                self.socket = None
-                self.conectado = False
-                self.log("Desconectado do servidor")
-                self.botao_conectar.config(text="Conectar")
-                self.definir_estado_controles(False)
-                # Limpa a imagem do canvas
-                self.canvas.delete("all")
-    
-    def definir_estado_controles(self, habilitado):
-        """Define o estado dos controles baseado na conexão."""
-        estado = tk.NORMAL if habilitado else tk.DISABLED
-        self.botao_screenshot.config(state=estado)
-        self.botao_info.config(state=estado)
-        self.entrada_comando.config(state=estado)
-        self.botao_executar.config(state=estado)
-    
-    def enviar_comando(self, comando):
-        """Envia um comando para o servidor."""
-        if self.conectado and self.socket:
-            try:
-                self.socket.sendall(comando.encode('utf-8'))
-                self.log(f"Comando enviado: {comando}")
-            except Exception as e:
-                self.log(f"Erro ao enviar comando: {str(e)}")
-                self.desconectar()
-    
-    def executar_comando_personalizado(self):
-        """Executa um comando personalizado inserido pelo usuário."""
-        comando = self.entrada_comando.get().strip()
-        if comando:
-            self.enviar_comando(f"exec {comando}")
-            self.entrada_comando.delete(0, tk.END)
-    
-    def thread_receber_dados(self):
-        """Thread para receber dados do servidor."""
-        while self.conectado and self.socket:
-            try:
-                # Primeiro, recebemos o tamanho dos dados
-                tamanho_bytes = self.socket.recv(struct.calcsize("L"))
-                if not tamanho_bytes:
-                    break
-                
-                tamanho = struct.unpack("L", tamanho_bytes)[0]
-                dados = self.receber_dados_completos(tamanho)
-                
-                # Processa os dados recebidos como imagem
-                self.processar_imagem(dados)
-                
-            except struct.error:
-                # Se não for uma imagem, tenta processar como texto
-                try:
-                    tamanho_bytes = self.socket.recv(struct.calcsize("!I"))
-                    if not tamanho_bytes:
-                        break
-                    
-                    tamanho = struct.unpack("!I", tamanho_bytes)[0]
-                    dados = self.receber_dados_completos(tamanho)
-                    texto = dados.decode('utf-8')
-                    
-                    # Exibe o texto no console
-                    self.log(f"Resposta do servidor:\n{texto}")
-                    
-                except Exception as e:
-                    self.log(f"Erro ao receber texto: {str(e)}")
-                    break
-            except Exception as e:
-                self.log(f"Erro na thread de recebimento: {str(e)}")
-                break
-        
-        if self.conectado:
-            self.desconectar()
-    
-    def receber_dados_completos(self, tamanho):
-        """Recebe uma quantidade específica de dados do socket."""
-        dados = b""
-        bytes_restantes = tamanho
-        
-        while bytes_restantes > 0:
-            chunk = self.socket.recv(min(bytes_restantes, 4096))
-            if not chunk:
-                raise ConnectionError("Conexão encerrada inesperadamente")
-            dados += chunk
-            bytes_restantes -= len(chunk)
             
-        return dados
+            self.socket = None
+            self.connected = False
+            
+            # Reseta interface
+            self.connect_button.config(text="Conectar")
+            self.set_control_state(False)
+            self.canvas.delete("all")
+            self.log("Desconectado")
     
-    def processar_imagem(self, dados):
-        """Processa e exibe a imagem recebida."""
+    def set_control_state(self, enabled):
+        """Habilita/desabilita controles."""
+        state = tk.NORMAL if enabled else tk.DISABLED
+        # Adicione aqui outros controles que devem ser habilitados/desabilitados
+    
+    def send_data(self, data):
+        """Envia dados serializados para o servidor."""
+        if not self.connected:
+            return
+        
         try:
-            # Decodifica o buffer de imagem
-            array = np.frombuffer(dados, dtype=np.uint8)
-            imagem = cv2.imdecode(array, cv2.IMREAD_COLOR)
-            
-            if imagem is not None:
-                # Converte BGR para RGB
-                imagem = cv2.cvtColor(imagem, cv2.COLOR_BGR2RGB)
-                self.frame_original = imagem
-                
-                # Exibe a imagem no canvas
-                self.exibir_imagem(imagem)
-                
-                # Atualiza o tamanho do canvas
-                altura, largura = imagem.shape[:2]
-                self.canvas.config(width=largura, height=altura)
-            else:
-                self.log("Erro: Dados de imagem inválidos")
+            serialized = pickle.dumps(data)
+            self.socket.send(struct.pack("Q", len(serialized)) + serialized)
         except Exception as e:
-            self.log(f"Erro ao processar imagem: {str(e)}")
+            self.log(f"Erro ao enviar dados: {e}")
+            self.disconnect()
     
-    def exibir_imagem(self, imagem):
-        """Exibe a imagem no canvas."""
-        altura, largura = imagem.shape[:2]
-        
-        # Cria uma imagem do Tkinter
-        imagem_pil = Image.fromarray(imagem)
-        imagem_tk = ImageTk.PhotoImage(image=imagem_pil)
-        
-        # Guarda referência para evitar coleta de lixo
-        self.imagem_tk = imagem_tk
-        
-        # Limpa o canvas e exibe a nova imagem
-        self.canvas.delete("all")
-        self.canvas.create_image(0, 0, anchor=tk.NW, image=imagem_tk)
-        self.canvas.config(scrollregion=(0, 0, largura, altura))
+    def receive_data(self):
+        """Recebe dados do servidor continuamente."""
+        while self.connected:
+            try:
+                # Recebe tamanho dos dados
+                data_size = struct.unpack("Q", self.socket.recv(8))[0]
+                
+                # Recebe dados
+                data = b""
+                while len(data) < data_size:
+                    packet = self.socket.recv(data_size - len(data))
+                    data += packet
+                
+                # Desserializa dados
+                decoded_data = pickle.loads(data)
+                
+                # Processa dados recebidos
+                if isinstance(decoded_data, np.ndarray):
+                    # É uma imagem
+                    self.display_screen(decoded_data)
+                elif isinstance(decoded_data, (dict, str)):
+                    # É uma mensagem ou informação
+                    self.log(str(decoded_data))
+                
+            except Exception as e:
+                self.log(f"Erro no recebimento: {e}")
+                self.disconnect()
+                break
     
-    def evento_mouse_movimento(self, evento):
-        """Manipula o evento de movimento do mouse."""
-        if self.conectado and self.frame_original is not None:
-            x, y = evento.x, evento.y
+    def display_screen(self, image_buffer):
+        """Exibe imagem recebida do servidor."""
+        try:
+            # Converte buffer para imagem
+            nparr = np.frombuffer(image_buffer, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            # Verifica se a posição mudou significativamente
-            dx = abs(x - self.ultima_posicao_mouse[0])
-            dy = abs(y - self.ultima_posicao_mouse[1])
+            # Converte para formato do Tkinter
+            img = Image.fromarray(frame)
+            imgtk = ImageTk.PhotoImage(image=img)
             
-            if dx > 5 or dy > 5:  # Envia somente se moveu mais de 5 pixels
-                self.ultima_posicao_mouse = (x, y)
-                self.enviar_comando(f"mouse_move {x} {y}")
+            # Exibe no canvas
+            self.canvas.delete("all")
+            self.canvas.create_image(0, 0, anchor=tk.NW, image=imgtk)
+            self.canvas.image = imgtk  # Mantém referência
+            
+        except Exception as e:
+            self.log(f"Erro ao exibir imagem: {e}")
     
-    def evento_mouse_clique(self, botao):
-        """Manipula o evento de clique do mouse."""
-        if self.conectado:
-            self.enviar_comando(f"mouse_click {botao}")
+    def on_mouse_move(self, event):
+        """Envia evento de movimento do mouse."""
+        if self.connected:
+            self.send_data(f"mouse_move {event.x} {event.y}")
     
-    def evento_teclado(self, evento):
-        """Manipula o evento de teclado."""
-        if self.conectado:
-            # Teclas especiais
-            tecla = evento.keysym
-            if len(tecla) == 1:  # Caractere único
-                self.enviar_comando(f"keyboard {tecla}")
-            elif tecla in ["Return", "space", "BackSpace", "Tab", "Escape", 
-                          "Up", "Down", "Left", "Right"]:
-                self.enviar_comando(f"hotkey {tecla}")
-            # Combinações com Ctrl, Alt, etc. podem ser implementadas também
+    def send_mouse_click(self, button):
+        """Envia clique do mouse."""
+        if self.connected:
+            self.send_data(f"mouse_click {button}")
     
-    def agendar_screenshot(self):
-        """Agenda capturas periódicas da tela remota."""
-        if self.conectado:
-            self.enviar_comando("screenshot")
-            # Agenda a próxima captura após 1 segundo
-            self.root.after(1000, self.agendar_screenshot)
+    def on_key_press(self, event):
+        """Envia evento de teclado."""
+        if self.connected:
+            key = event.char
+            if key:
+                self.send_data(f"keyboard {key}")
     
-    def encerrar(self):
-        """Encerra o cliente."""
-        if self.conectado:
-            self.desconectar()
+    def get_system_info(self):
+        """Solicita informações do sistema."""
+        if self.connected:
+            self.send_data("system_info")
+    
+    def open_command_dialog(self):
+        """Abre diálogo para executar comando."""
+        if not self.connected:
+            return
+        
+        # Cria janela de diálogo
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Executar Comando")
+        dialog.geometry("400x150")
+        
+        ttk.Label(dialog, text="Digite o comando:").pack(pady=10)
+        
+        command_entry = ttk.Entry(dialog, width=50)
+        command_entry.pack(pady=10)
+        
+        def execute_command():
+            cmd = command_entry.get()
+            if cmd:
+                self.send_data(f"exec {cmd}")
+                dialog.destroy()
+        
+        ttk.Button(dialog, text="Executar", command=execute_command).pack(pady=10)
+    
+    def on_closing(self):
+        """Tratamento de fechamento da janela."""
+        if self.connected:
+            self.disconnect()
         self.root.destroy()
 
-if __name__ == "__main__":
+def main():
     root = tk.Tk()
-    app = ClienteRemoto(root)
+    app = EnhancedRemoteClient(root)
+    root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
+
+if __name__ == "__main__":
+    main()
