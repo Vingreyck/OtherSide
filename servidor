@@ -60,6 +60,8 @@ class OptimizedRemoteServer:
                 # Aumenta o buffer do socket
                 client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)
                 client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)
+                # Define um timeout maior para o socket
+                client_socket.settimeout(10.0)  # 10 segundos de timeout
                 print(f"Conexão de {address}")
                 
                 client_thread = threading.Thread(target=self.handle_client, args=(client_socket,))
@@ -90,6 +92,7 @@ class OptimizedRemoteServer:
                 command = self.receive_data(client_socket)
                 
                 if not command:
+                    print("Comando vazio ou conexão fechada.")
                     break
                 
                 # Processamento de diferentes tipos de comandos
@@ -151,13 +154,20 @@ class OptimizedRemoteServer:
                             print(f"Qualidade alterada para: {quality}")
                         except Exception as e:
                             print(f"Erro no processamento de quality: {e}")
+                    elif command == 'heartbeat':
+                        # Responde ao heartbeat do cliente
+                        self.send_data(client_socket, 'heartbeat_ok')
         
         except Exception as e:
             print(f"Erro no cliente: {e}")
         finally:
-            client_socket.close()
+            print("Cliente desconectado.")
             if client_socket in self.clients:
                 self.clients.remove(client_socket)
+            try:
+                client_socket.close()
+            except:
+                pass
     
     def continuous_screen_capture(self, client_socket):
         """Captura contínua de tela com otimizações."""
@@ -165,28 +175,34 @@ class OptimizedRemoteServer:
             # Início da contagem de tempo para limitar quadros
             last_capture_time = time.time()
             
-            while self.running:
+            while self.running and client_socket in self.clients:
                 current_time = time.time()
                 # Verifica se já passou o intervalo necessário
                 if (current_time - last_capture_time) >= self.screenshot_interval:
-                    # Captura tela
-                    screen = ImageGrab.grab()
-                    screen_np = np.array(screen)
-                    
-                    # Converte e comprime
-                    screen_np = cv2.cvtColor(screen_np, cv2.COLOR_RGB2BGR)
-                    
-                    # Aplica escala reduzida
-                    scaled = cv2.resize(screen_np, (0,0), fx=self.scale_factor, fy=self.scale_factor)
-                    
-                    # Codifica a imagem com qualidade reduzida
-                    _, buffer = cv2.imencode('.jpg', scaled, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
-                    
-                    # Envia dados
-                    self.send_data(client_socket, buffer)
-                    
-                    # Atualiza o tempo da última captura
-                    last_capture_time = current_time
+                    try:
+                        # Captura tela
+                        screen = ImageGrab.grab()
+                        screen_np = np.array(screen)
+                        
+                        # Converte e comprime
+                        screen_np = cv2.cvtColor(screen_np, cv2.COLOR_RGB2BGR)
+                        
+                        # Aplica escala reduzida
+                        scaled = cv2.resize(screen_np, (0,0), fx=self.scale_factor, fy=self.scale_factor)
+                        
+                        # Codifica a imagem com qualidade reduzida
+                        _, buffer = cv2.imencode('.jpg', scaled, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
+                        
+                        # Envia dados
+                        success = self.send_data(client_socket, buffer)
+                        if not success:
+                            break
+                        
+                        # Atualiza o tempo da última captura
+                        last_capture_time = current_time
+                    except Exception as e:
+                        print(f"Erro durante captura: {e}")
+                        break
                 else:
                     # Pequena pausa para não consumir CPU desnecessariamente
                     time.sleep(0.01)
@@ -223,33 +239,59 @@ class OptimizedRemoteServer:
         """Envia dados serializados com verificação de conexão."""
         try:
             serialized = pickle.dumps(data)
-            connection.send(struct.pack("Q", len(serialized)) + serialized)
-        except:
-            # Em caso de erro na conexão, não faz nada
-            pass
+            header = struct.pack("Q", len(serialized))
+            connection.send(header)
+            connection.sendall(serialized)
+            return True
+        except Exception as e:
+            print(f"Erro ao enviar dados: {e}")
+            if connection in self.clients:
+                self.clients.remove(connection)
+            return False
     
     def receive_data(self, connection):
-        """Recebe dados serializados com timeout."""
+        """Recebe dados serializados com tratamento de erro aprimorado."""
         try:
-            # Define timeout para evitar bloqueio
-            connection.settimeout(1.0)
+            # Recebe o cabeçalho com o tamanho dos dados
             header = connection.recv(8)
-            if not header:
+            if not header or len(header) < 8:
+                print(f"Cabeçalho incompleto recebido: {len(header)} bytes")
                 return None
                 
             data_size = struct.unpack("Q", header)[0]
             
-            # Restaura timeout padrão para recebimento de pacotes maiores
-            connection.settimeout(None)
+            # Verifica se o tamanho dos dados é razoável
+            if data_size > 100000000:  # Limite de 100MB para evitar problemas
+                print(f"Tamanho de dados excessivo: {data_size} bytes")
+                return None
             
+            # Recebe os dados em chunks
             data = b""
-            while len(data) < data_size:
-                packet = connection.recv(min(data_size - len(data), 4096))  # Tamanho máximo de pacote
-                if not packet:
-                    return None
-                data += packet
+            remaining = data_size
+            
+            while remaining > 0:
+                # Define um timeout temporário para cada operação de recebimento
+                connection.settimeout(5.0)
                 
+                chunk_size = min(remaining, 32768)  # Recebe no máximo 32KB por vez
+                chunk = connection.recv(chunk_size)
+                
+                if not chunk:
+                    print("Conexão fechada durante recebimento de dados")
+                    return None
+                
+                data += chunk
+                remaining -= len(chunk)
+            
+            # Restaura o timeout padrão
+            connection.settimeout(10.0)
+            
+            # Desserializa os dados
             return pickle.loads(data)
+        
+        except socket.timeout:
+            print("Timeout ao receber dados")
+            return None
         except Exception as e:
             print(f"Erro ao receber dados: {e}")
             return None

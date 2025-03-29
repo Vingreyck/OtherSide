@@ -20,6 +20,7 @@ class OptimizedRemoteClient:
         self.socket = None
         self.connected = False
         self.receive_thread = None
+        self.heartbeat_thread = None
         
         # Variáveis de controle
         self.last_mouse_move = 0
@@ -103,7 +104,7 @@ class OptimizedRemoteClient:
     def log(self, message):
         """Adiciona mensagem ao console de log."""
         self.log_console.config(state=tk.NORMAL)
-        self.log_console.insert(tk.END, f"{message}\n")
+        self.log_console.insert(tk.END, f"{time.strftime('%H:%M:%S')} - {message}\n")
         self.log_console.see(tk.END)
         self.log_console.config(state=tk.DISABLED)
     
@@ -126,8 +127,15 @@ class OptimizedRemoteClient:
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)
             
+            # Define timeout para a conexão inicial
+            self.socket.settimeout(10.0)
+            
+            self.log(f"Conectando a {host}:{port}...")
             self.socket.connect((host, port))
             self.connected = True
+            
+            # Aguarda 100ms para garantir que a conexão esteja estabelecida
+            time.sleep(0.1)
             
             # Envia o tamanho da tela para o servidor
             screen_width = self.canvas.winfo_width()
@@ -144,12 +152,33 @@ class OptimizedRemoteClient:
             self.receive_thread.daemon = True
             self.receive_thread.start()
             
+            # Inicia thread de heartbeat
+            self.heartbeat_thread = threading.Thread(target=self.heartbeat)
+            self.heartbeat_thread.daemon = True
+            self.heartbeat_thread.start()
+            
         except Exception as e:
             self.log(f"Erro de conexão: {e}")
             messagebox.showerror("Erro", str(e))
+            if self.socket:
+                self.socket.close()
+                self.socket = None
+    
+    def heartbeat(self):
+        """Envia sinal de heartbeat periódico para manter a conexão ativa."""
+        while self.connected:
+            try:
+                time.sleep(5)  # Envia a cada 5 segundos
+                if self.connected:
+                    self.send_data("heartbeat")
+            except:
+                # Se falhar, a thread de recebimento detectará e desconectará
+                pass
     
     def disconnect(self):
         """Encerra conexão com o servidor."""
+        self.connected = False
+        
         if self.socket:
             try:
                 self.socket.close()
@@ -157,13 +186,12 @@ class OptimizedRemoteClient:
                 pass
             
             self.socket = None
-            self.connected = False
             
-            # Reseta interface
-            self.connect_button.config(text="Conectar")
-            self.set_control_state(False)
-            self.canvas.delete("all")
-            self.log("Desconectado")
+        # Reseta interface
+        self.connect_button.config(text="Conectar")
+        self.set_control_state(False)
+        self.canvas.delete("all")
+        self.log("Desconectado")
     
     def set_control_state(self, enabled):
         """Habilita/desabilita controles."""
@@ -172,47 +200,114 @@ class OptimizedRemoteClient:
     
     def send_data(self, data):
         """Envia dados serializados para o servidor."""
-        if not self.connected:
-            return
+        if not self.connected or not self.socket:
+            return False
         
         try:
             serialized = pickle.dumps(data)
-            self.socket.send(struct.pack("Q", len(serialized)) + serialized)
+            
+            # Envia o tamanho dos dados primeiro
+            header = struct.pack("Q", len(serialized))
+            self.socket.sendall(header)
+            
+            # Envia os dados em chunks para evitar problemas com pacotes grandes
+            bytes_sent = 0
+            while bytes_sent < len(serialized):
+                chunk_size = min(32768, len(serialized) - bytes_sent)  # Envia 32KB por vez
+                self.socket.sendall(serialized[bytes_sent:bytes_sent + chunk_size])
+                bytes_sent += chunk_size
+                
+            return True
         except Exception as e:
             self.log(f"Erro ao enviar dados: {e}")
             self.disconnect()
+            return False
     
     def receive_data(self):
         """Recebe dados do servidor continuamente."""
+        buffer_incomplete = False
+        incomplete_data = b""
+        
         while self.connected:
             try:
-                # Recebe tamanho dos dados
-                data_size = struct.unpack("Q", self.socket.recv(8))[0]
+                if not buffer_incomplete:
+                    # Recebe tamanho dos dados
+                    header = self.socket.recv(8)
+                    if not header or len(header) < 8:
+                        if len(header) > 0:
+                            self.log(f"Cabeçalho incompleto: {len(header)} bytes")
+                        raise ConnectionError("Cabeçalho incompleto ou conexão fechada")
+                    
+                    data_size = struct.unpack("Q", header)[0]
+                    
+                    # Verifica se o tamanho é razoável
+                    if data_size > 100000000:  # Limite de 100MB
+                        self.log(f"Tamanho de dados excessivo: {data_size}")
+                        raise ConnectionError("Tamanho de dados inválido")
+                    
+                    # Recebe dados em chunks
+                    data = b""
+                    remaining = data_size
+                else:
+                    # Continua recebendo dados incompletos
+                    data = incomplete_data
+                    remaining = data_size - len(data)
+                    buffer_incomplete = False
                 
-                # Recebe dados
-                data = b""
-                while len(data) < data_size:
-                    packet = self.socket.recv(min(data_size - len(data), 4096))
-                    if not packet:
-                        raise ConnectionError("Conexão fechada")
-                    data += packet
+                # Define um timeout para cada operação de recebimento
+                self.socket.settimeout(10.0)
+                
+                start_time = time.time()
+                while remaining > 0:
+                    # Verifica se já passou muito tempo (30 segundos)
+                    if time.time() - start_time > 30:
+                        self.log("Timeout de recebimento excedido")
+                        raise socket.timeout("Timeout de recebimento excedido")
+                    
+                    try:
+                        chunk_size = min(remaining, 32768)  # Recebe no máximo 32KB por vez
+                        chunk = self.socket.recv(chunk_size)
+                        
+                        if not chunk:
+                            raise ConnectionError("Conexão fechada durante recebimento")
+                        
+                        data += chunk
+                        remaining -= len(chunk)
+                    except socket.timeout:
+                        # Verifica se recebemos dados parciais
+                        if len(data) > 0:
+                            # Salva os dados parciais e continua na próxima iteração
+                            incomplete_data = data
+                            buffer_incomplete = True
+                            self.log(f"Recebimento parcial: {len(data)}/{data_size} bytes")
+                            break
+                        else:
+                            raise
+                
+                # Se recebemos dados incompletos, continue para a próxima iteração
+                if buffer_incomplete:
+                    continue
                 
                 # Desserializa dados
                 decoded_data = pickle.loads(data)
                 
                 # Processa dados recebidos
-                if isinstance(decoded_data, (bytes, np.ndarray)):
+                if isinstance(decoded_data, (bytes, bytearray, np.ndarray)):
                     # É uma imagem - armazenar no buffer
                     self.screen_buffer = decoded_data
                     # Atualizar a tela a cada 50ms (20 FPS máximo)
                     current_time = time.time()
                     if current_time - self.last_screen_update >= 0.05:
-                        self.display_screen(decoded_data)
+                        self.root.after(0, self.display_screen, decoded_data)
                         self.last_screen_update = current_time
                 elif isinstance(decoded_data, (dict, str)):
                     # É uma mensagem ou informação
-                    self.log(str(decoded_data))
+                    if decoded_data != "heartbeat_ok":  # Ignora respostas de heartbeat
+                        self.log(f"Mensagem do servidor: {decoded_data}")
                 
+            except socket.timeout:
+                self.log("Timeout de conexão - tentando continuar...")
+                # Continua tentando - o heartbeat deve reiniciar a comunicação
             except Exception as e:
                 self.log(f"Erro no recebimento: {e}")
                 self.disconnect()
@@ -220,6 +315,9 @@ class OptimizedRemoteClient:
     
     def display_screen(self, image_buffer):
         """Exibe imagem recebida do servidor."""
+        if not self.connected:
+            return
+            
         try:
             # Converte buffer para imagem
             nparr = np.frombuffer(image_buffer, np.uint8)
@@ -306,11 +404,14 @@ def main():
     root = tk.Tk()
     app = OptimizedRemoteClient(root)
     
-    # Configura evento para após o carregamento completo da janela
+    # Configura evento para após o carregamento da janela
     root.update()
     root.deiconify()
     
+    # Configura evento de fechamento
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
+    
+    # Inicia o loop principal
     root.mainloop()
 
 if __name__ == "__main__":
