@@ -6,7 +6,6 @@ import cv2
 import numpy as np
 import pyautogui
 import platform
-import subprocess
 from PIL import ImageGrab
 from queue import Queue
 import time
@@ -26,11 +25,11 @@ class RemoteServer:
         
         # Flags de controle
         self.running = True
-        self.screenshot_interval = 0.2  # 5 FPS
+        self.screenshot_interval = 0.1  # 10 FPS (qualidade alta)
         
-        # Configurações de captura
-        self.scale_factor = 0.4  # 40% do tamanho original
-        self.jpeg_quality = 50
+        # Configurações de captura (qualidade alta permanente)
+        self.scale_factor = 0.5
+        self.jpeg_quality = 70
         
         # Configuração de tela
         self.screen_size = pyautogui.size()
@@ -106,43 +105,12 @@ class RemoteServer:
                         except Exception as e:
                             print(f"Erro em mouse_click: {e}")
                     
-                    elif command.startswith('keyboard'):
+                    elif command.startswith('key'):
                         try:
                             _, key = command.split()
-                            self.command_queue.put(('keyboard', key))
+                            self.command_queue.put(('key', key))
                         except Exception as e:
-                            print(f"Erro em keyboard: {e}")
-                    
-                    elif command == 'system_info':
-                        info = self.get_system_info()
-                        self.send_data(client_socket, info)
-                    
-                    elif command.startswith('exec'):
-                        try:
-                            _, cmd = command.split(' ', 1)
-                            result = self.execute_command(cmd)
-                            self.send_data(client_socket, result)
-                        except Exception as e:
-                            print(f"Erro em exec: {e}")
-                    
-                    elif command.startswith('quality'):
-                        try:
-                            _, quality = command.split()
-                            if quality == "Baixa":
-                                self.scale_factor = 0.3
-                                self.jpeg_quality = 30
-                                self.screenshot_interval = 0.3
-                            elif quality == "Alta":
-                                self.scale_factor = 0.5
-                                self.jpeg_quality = 70
-                                self.screenshot_interval = 0.1
-                            else:  # Normal
-                                self.scale_factor = 0.4
-                                self.jpeg_quality = 50
-                                self.screenshot_interval = 0.2
-                            print(f"Qualidade alterada para: {quality}")
-                        except Exception as e:
-                            print(f"Erro em quality: {e}")
+                            print(f"Erro em comando de teclado: {e}")
                     
                     elif command == 'heartbeat':
                         self.send_data(client_socket, 'heartbeat_ok')
@@ -206,8 +174,59 @@ class RemoteServer:
                 elif command_type == 'mouse_click':
                     pyautogui.click(button=data, _pause=False)
                 
-                elif command_type == 'keyboard':
-                    pyautogui.write(data, _pause=False)
+                elif command_type == 'key':
+                    # Mapear teclas especiais se necessário
+                    try:
+                        if len(data) == 1:
+                            # É um caractere simples
+                            pyautogui.press(data.lower(), _pause=False)
+                        else:
+                            # Pode ser uma tecla especial
+                            key_mapping = {
+                                'space': 'space',
+                                'Return': 'enter',
+                                'BackSpace': 'backspace',
+                                'Delete': 'delete',
+                                'Tab': 'tab',
+                                'Escape': 'esc',
+                                'Up': 'up',
+                                'Down': 'down',
+                                'Left': 'left',
+                                'Right': 'right',
+                                'Home': 'home',
+                                'End': 'end',
+                                'Page_Up': 'pageup',
+                                'Page_Down': 'pagedown',
+                                'Insert': 'insert',
+                                'F1': 'f1',
+                                'F2': 'f2',
+                                'F3': 'f3',
+                                'F4': 'f4',
+                                'F5': 'f5',
+                                'F6': 'f6',
+                                'F7': 'f7',
+                                'F8': 'f8',
+                                'F9': 'f9',
+                                'F10': 'f10',
+                                'F11': 'f11',
+                                'F12': 'f12',
+                                'Control_L': 'ctrl',
+                                'Control_R': 'ctrl',
+                                'Alt_L': 'alt',
+                                'Alt_R': 'alt',
+                                'Shift_L': 'shift',
+                                'Shift_R': 'shift',
+                                'Win_L': 'win',
+                                'Win_R': 'win',
+                                'Menu': 'menu',
+                                'capslock': 'capslock',
+                            }
+                            
+                            # Se for tecla mapeada, use o mapeamento, senão tente usar a tecla diretamente
+                            key_to_press = key_mapping.get(data, data.lower())
+                            pyautogui.press(key_to_press, _pause=False)
+                    except Exception as e:
+                        print(f"Erro ao processar tecla '{data}': {e}")
                 
                 self.command_queue.task_done()
             
@@ -263,25 +282,6 @@ class RemoteServer:
         except Exception as e:
             print(f"Erro ao receber dados: {e}")
             return None
-    
-    def get_system_info(self):
-        """Obtém informações do sistema"""
-        return {
-            'os': platform.system(),
-            'release': platform.release(),
-            'processor': platform.processor(),
-            'machine': platform.machine(),
-            'screen_size': self.screen_size
-        }
-    
-    def execute_command(self, command):
-        """Executa comando no sistema"""
-        try:
-            return subprocess.check_output(command, shell=True, timeout=5).decode()
-        except subprocess.TimeoutExpired:
-            return "Comando excedeu tempo limite de 5 segundos"
-        except Exception as e:
-            return str(e)
     
     def stop_server(self):
         """Encerra o servidor"""
