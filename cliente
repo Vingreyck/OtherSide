@@ -14,6 +14,7 @@ class RemoteClient:
         self.root = root
         self.root.title("Remote Control Client")
         self.root.geometry("1200x800")
+        self.root.state('zoomed')  # Maximiza a janela
         
         # Variáveis de conexão e controle
         self.socket = None
@@ -30,9 +31,14 @@ class RemoteClient:
         self.server_height = 0  # Altura real do servidor
         self.scale_x = 1.0  # Fator de escala horizontal
         self.scale_y = 1.0  # Fator de escala vertical
+        self.canvas_image = None  # Referência para a imagem no canvas
+        self.current_image = None  # Referência para a imagem atual
         
         # Configurar interface
         self.create_interface()
+        
+        # Vincular evento de redimensionamento da janela
+        self.root.bind("<Configure>", self.on_window_resize)
     
     def create_interface(self):
         """Interface gráfica simplificada"""
@@ -73,19 +79,19 @@ class RemoteClient:
         ttk.Button(control_frame, text="Executar CMD", command=self.open_command_dialog).pack(side=tk.LEFT, padx=5)
         
         # Frame de visualização com barra de status
-        view_frame = ttk.LabelFrame(main_frame, text="Tela Remota")
-        view_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.view_frame = ttk.LabelFrame(main_frame, text="Tela Remota")
+        self.view_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Adicionando status da escala na parte superior
-        self.status_label = ttk.Label(view_frame, text="Sem conexão")
+        self.status_label = ttk.Label(self.view_frame, text="Sem conexão")
         self.status_label.pack(anchor=tk.W, padx=5, pady=2)
         
-        # Canvas com scroll
-        canvas_frame = ttk.Frame(view_frame)
-        canvas_frame.pack(fill=tk.BOTH, expand=True)
+        # Canvas com scroll - Importante usar pack com fill e expand
+        self.canvas_frame = ttk.Frame(self.view_frame)
+        self.canvas_frame.pack(fill=tk.BOTH, expand=True)
         
         # Canvas para exibir tela remota
-        self.canvas = tk.Canvas(canvas_frame, bg="black")
+        self.canvas = tk.Canvas(self.canvas_frame, bg="black")
         self.canvas.pack(fill=tk.BOTH, expand=True)
         
         # Eventos
@@ -101,6 +107,16 @@ class RemoteClient:
         
         self.log_console = scrolledtext.ScrolledText(log_frame, height=6)
         self.log_console.pack(fill=tk.BOTH)
+    
+    def on_window_resize(self, event):
+        """Manipula evento de redimensionamento da janela"""
+        # Verifica se o evento veio da janela principal e não de um widget filho
+        if event.widget == self.root:
+            # Atualiza fatores de escala
+            self.update_scale_factors()
+            # Se tivermos uma imagem atual, redimensione-a para se ajustar ao novo tamanho
+            if self.connected and self.screen_buffer is not None:
+                self.root.after(100, lambda: self.display_screen(self.screen_buffer))
     
     def log(self, message):
         """Adiciona mensagem ao console"""
@@ -259,8 +275,8 @@ class RemoteClient:
                 if isinstance(decoded_data, dict) and "screen_size" in decoded_data:
                     # Atualiza informações de tamanho e escala da tela
                     self.server_width, self.server_height = decoded_data["screen_size"]
-                    self.update_scale_factors()
                     self.log(f"Tela do servidor: {self.server_width}x{self.server_height}")
+                    self.update_scale_factors()
                 elif isinstance(decoded_data, (bytes, bytearray, np.ndarray)):
                     # É uma imagem - atualizar na interface
                     self.screen_buffer = decoded_data
@@ -281,15 +297,19 @@ class RemoteClient:
                 break
     
     def update_scale_factors(self):
-        """Atualiza os fatores de escala com base nos tamanhos atual do canvas"""
+        """Atualiza os fatores de escala com base nos tamanhos do canvas e servidor"""
         # Obtém tamanho atual do canvas
         canvas_width = self.canvas.winfo_width()
         canvas_height = self.canvas.winfo_height()
         
         if canvas_width > 1 and canvas_height > 1 and self.server_width > 0 and self.server_height > 0:
+            # Calcular proporção para mapear as coordenadas do cliente para o servidor
             self.scale_x = self.server_width / canvas_width
             self.scale_y = self.server_height / canvas_height
-            self.status_label.config(text=f"Servidor: {self.server_width}x{self.server_height} | Escala: {self.scale_x:.2f}x, {self.scale_y:.2f}y")
+            
+            self.status_label.config(text=f"Servidor: {self.server_width}x{self.server_height} | " 
+                                      f"Canvas: {canvas_width}x{canvas_height} | "
+                                      f"Escala: {self.scale_x:.2f}x, {self.scale_y:.2f}y")
     
     def display_screen(self, image_buffer):
         """Exibe imagem recebida do servidor"""
@@ -302,19 +322,38 @@ class RemoteClient:
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            # Converte para formato do Tkinter
-            img = Image.fromarray(frame)
-            imgtk = ImageTk.PhotoImage(image=img)
+            # Obtém tamanho do canvas atual
+            canvas_width = self.canvas.winfo_width()
+            canvas_height = self.canvas.winfo_height()
             
-            # Exibe no canvas e atualiza escala
-            canvas_width, canvas_height = img.width, img.height
-            self.canvas.config(width=canvas_width, height=canvas_height)
-            self.canvas.delete("all")
-            self.canvas.create_image(0, 0, anchor=tk.NW, image=imgtk)
-            self.canvas.image = imgtk
-            
-            # Atualiza fatores de escala
-            self.update_scale_factors()
+            # Se o canvas tem tamanho válido, redimensiona a imagem para caber nele
+            if canvas_width > 10 and canvas_height > 10:
+                # Calcular proporção para manter a relação de aspecto
+                img_height, img_width = frame.shape[:2]
+                ratio = min(canvas_width/img_width, canvas_height/img_height)
+                
+                # Redimensiona a imagem para caber no canvas, mantendo a proporção
+                new_width = int(img_width * ratio)
+                new_height = int(img_height * ratio)
+                
+                # Redimensionar a imagem para o tamanho do canvas
+                resized_frame = cv2.resize(frame, (new_width, new_height))
+                
+                # Converte para formato do Tkinter
+                self.current_image = Image.fromarray(resized_frame)
+                imgtk = ImageTk.PhotoImage(image=self.current_image)
+                
+                # Exibe no canvas
+                self.canvas.delete("all")
+                self.canvas_image = self.canvas.create_image(
+                    canvas_width//2, canvas_height//2,  # Centraliza a imagem no canvas
+                    anchor=tk.CENTER, 
+                    image=imgtk
+                )
+                self.canvas.image = imgtk  # Mantém referência para evitar coleta de lixo
+                
+                # Atualiza fatores de escala depois de ajustar a imagem
+                self.update_scale_factors()
             
         except Exception as e:
             self.log(f"Erro ao exibir imagem: {e}")
@@ -324,16 +363,56 @@ class RemoteClient:
         if self.connected:
             current_time = time.time()
             if current_time - self.last_mouse_move >= self.mouse_throttle:
-                # Aplica correção de escala às coordenadas do mouse
-                server_x = int(event.x * self.scale_x)
-                server_y = int(event.y * self.scale_y)
-                self.send_data(f"mouse_move {server_x} {server_y}")
-                self.last_mouse_move = current_time
+                # Obtém tamanho atual do canvas
+                canvas_width = self.canvas.winfo_width()
+                canvas_height = self.canvas.winfo_height()
+                
+                if canvas_width > 1 and canvas_height > 1 and self.current_image:
+                    # Ajustar as coordenadas considerando a posição centralizada da imagem
+                    img_width, img_height = self.current_image.size
+                    
+                    # Calcula a posição da imagem dentro do canvas
+                    x_offset = (canvas_width - img_width) // 2
+                    y_offset = (canvas_height - img_height) // 2
+                    
+                    # Ajusta as coordenadas do mouse relativo à imagem, não ao canvas
+                    rel_x = event.x - x_offset
+                    rel_y = event.y - y_offset
+                    
+                    # Apenas processar se o clique estiver dentro da imagem
+                    if 0 <= rel_x < img_width and 0 <= rel_y < img_height:
+                        # Mapeamento das coordenadas do cliente para o servidor
+                        server_x = int((rel_x / img_width) * self.server_width)
+                        server_y = int((rel_y / img_height) * self.server_height)
+                        
+                        self.send_data(f"mouse_move {server_x} {server_y}")
+                        self.last_mouse_move = current_time
     
     def send_mouse_click(self, button):
         """Envia clique do mouse"""
         if self.connected:
-            self.send_data(f"mouse_click {button}")
+            # Apenas enviar clique se o mouse estiver sobre a imagem
+            x, y = self.canvas.winfo_pointerxy()
+            x -= self.canvas.winfo_rootx()
+            y -= self.canvas.winfo_rooty()
+            
+            canvas_width = self.canvas.winfo_width()
+            canvas_height = self.canvas.winfo_height()
+            
+            if self.current_image:
+                img_width, img_height = self.current_image.size
+                
+                # Calcula a posição da imagem dentro do canvas
+                x_offset = (canvas_width - img_width) // 2
+                y_offset = (canvas_height - img_height) // 2
+                
+                # Ajusta as coordenadas do mouse relativo à imagem
+                rel_x = x - x_offset
+                rel_y = y - y_offset
+                
+                # Apenas processar se o clique estiver dentro da imagem
+                if 0 <= rel_x < img_width and 0 <= rel_y < img_height:
+                    self.send_data(f"mouse_click {button}")
     
     def on_key_press(self, event):
         """Envia evento de teclado"""
