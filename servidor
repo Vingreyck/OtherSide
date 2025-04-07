@@ -127,7 +127,6 @@ class RemoteServer:
                 pass
     
     def continuous_screen_capture(self, client_socket):
-        """Captura contínua de tela"""
         try:
             last_capture_time = time.time()
             
@@ -222,7 +221,6 @@ class RemoteServer:
                                 'capslock': 'capslock',
                             }
                             
-                            # Se for tecla mapeada, use o mapeamento, senão tente usar a tecla diretamente
                             key_to_press = key_mapping.get(data, data.lower())
                             pyautogui.press(key_to_press, _pause=False)
                     except Exception as e:
