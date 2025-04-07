@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import pyautogui
 import platform
+import pyngrok.ngrok as ngrok
 from PIL import ImageGrab
 from queue import Queue
 import time
@@ -36,14 +37,38 @@ class RemoteServer:
         
         # Desativa o failsafe do pyautogui
         pyautogui.FAILSAFE = False
+        
+    def start_ngrok_tunnel(self, port):
+        """Inicia um túnel ngrok para o servidor"""
+        try:
+            # Inicia um túnel HTTP para o porta especificada
+            tunnel = ngrok.connect(port, "tcp")
+            public_url = tunnel.public_url
+            
+            # Extrai o endereço e porta do formato tcp://X.ngrok.io:YYYY
+            ngrok_host = public_url.replace("tcp://", "").split(":")[0]
+            ngrok_port = int(public_url.replace("tcp://", "").split(":")[1])
+            
+            print(f"Túnel ngrok iniciado: {public_url}")
+            print(f"Compartilhe essas informações com o cliente:")
+            print(f"Host: {ngrok_host}, Porta: {ngrok_port}")
+            
+            return ngrok_host, ngrok_port
+        except Exception as e:
+            print(f"Erro ao iniciar túnel ngrok: {e}")
+            return None, None
     
-    def start_server(self):
-        """Inicia o servidor e aceita conexões"""
+    def start_server(self, use_ngrok=False):
+        """Inicia o servidor e aceita conexões, opcionalmente usando ngrok"""
         try:
             self.server_socket.bind((self.host, self.port))
             self.server_socket.listen(5)
             print(f"Servidor iniciado em {self.host}:{self.port}")
             print(f"Tamanho da tela: {self.screen_size}")
+            
+            # Inicia túnel ngrok se requisitado
+            if use_ngrok:
+                self.start_ngrok_tunnel(self.port)
             
             # Thread para processamento de comandos
             command_thread = threading.Thread(target=self.process_commands)
@@ -292,5 +317,11 @@ class RemoteServer:
         self.server_socket.close()
 
 if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Servidor de controle remoto')
+    parser.add_argument('--ngrok', action='store_true', help='Usar túnel ngrok para acesso remoto')
+    args = parser.parse_args()
+    
     server = RemoteServer()
-    server.start_server()
+    server.start_server(use_ngrok=args.ngrok)
