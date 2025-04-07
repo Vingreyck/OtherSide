@@ -65,10 +65,9 @@ class RemoteClient:
         self.connect_button = ttk.Button(conn_frame, text="Conectar", command=self.toggle_connection)
         self.connect_button.grid(row=0, column=4, padx=5, pady=5)
         
-        # Botão para conexão via ngrok (solicita entrada dos dados)
-        self.ngrok_button = ttk.Button(conn_frame, text="Usar Ngrok", command=self.prompt_ngrok_info)
-        self.ngrok_button.grid(row=0, column=5, padx=5, pady=5)
-        
+        self.serveo_button = ttk.Button(conn_frame, text="Usar Serveo", command=self.prompt_serveo_info)
+        self.serveo_button.grid(row=0, column=6, padx=5, pady=5)
+
         # Frame de visualização com barra de status
         self.view_frame = ttk.LabelFrame(main_frame, text="Tela Remota")
         self.view_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -99,50 +98,44 @@ class RemoteClient:
         self.log_console = scrolledtext.ScrolledText(log_frame, height=6)
         self.log_console.pack(fill=tk.BOTH)
     
-    def prompt_ngrok_info(self):
-        """Solicita informações de conexão ngrok ao usuário"""
-        ngrok_dialog = tk.Toplevel(self.root)
-        ngrok_dialog.title("Conexão Ngrok")
-        ngrok_dialog.geometry("400x150")
-        ngrok_dialog.transient(self.root)
-        ngrok_dialog.grab_set()
-        
-        ttk.Label(ngrok_dialog, text="Entre com as informações do túnel ngrok:").pack(pady=10)
-        
-        info_frame = ttk.Frame(ngrok_dialog)
+    def prompt_serveo_info(self):
+        """Solicita host e porta para conexão via Serveo"""
+        serveo_dialog = tk.Toplevel(self.root)
+        serveo_dialog.title("Conexão via Serveo")
+        serveo_dialog.geometry("400x150")
+        serveo_dialog.transient(self.root)
+        serveo_dialog.grab_set()
+
+        ttk.Label(serveo_dialog, text="Entre com as informações do túnel Serveo:").pack(pady=10)
+
+        info_frame = ttk.Frame(serveo_dialog)
         info_frame.pack(fill=tk.X, padx=10, pady=5)
-        
-        ttk.Label(info_frame, text="Host ngrok:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
-        ngrok_host_entry = ttk.Entry(info_frame, width=30)
-        ngrok_host_entry.grid(row=0, column=1, padx=5, pady=5)
-        
-        ttk.Label(info_frame, text="Porta ngrok:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
-        ngrok_port_entry = ttk.Entry(info_frame, width=30)
-        ngrok_port_entry.grid(row=1, column=1, padx=5, pady=5)
-        
-        def apply_ngrok_info():
-            host = ngrok_host_entry.get().strip()
-            port = ngrok_port_entry.get().strip()
 
-            # Se o usuário colar a URL completa, parsear
-            if host.startswith("http"):
-                parsed = urlparse(host)
-                host = parsed.hostname or host
-                if parsed.port:
-                    port = str(parsed.port)  # Sobrescreve se porta vier na URL
+        ttk.Label(info_frame, text="Host Serveo:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        serveo_host_entry = ttk.Entry(info_frame, width=30)
+        serveo_host_entry.insert(0, "meutunel.serveo.net")  # exemplo
+        serveo_host_entry.grid(row=0, column=1, padx=5, pady=5)
 
+        ttk.Label(info_frame, text="Porta Serveo:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        serveo_port_entry = ttk.Entry(info_frame, width=30)
+        serveo_port_entry.insert(0, "12345")
+        serveo_port_entry.grid(row=1, column=1, padx=5, pady=5)
+
+        def apply_serveo_info():
+            host = serveo_host_entry.get().strip()
+            port = serveo_port_entry.get().strip()
             if host and port:
                 self.host_entry.delete(0, tk.END)
                 self.host_entry.insert(0, host)
-                
+
                 self.port_entry.delete(0, tk.END)
                 self.port_entry.insert(0, port)
-                
-                self.log(f"Configurado para usar ngrok: {host}:{port}")
 
-            ngrok_dialog.destroy()
-        # Este botão deve estar dentro da função prompt_ngrok_info
-        ttk.Button(ngrok_dialog, text="Aplicar", command=apply_ngrok_info).pack(pady=10)
+                self.log(f"Configurado para usar Serveo: {host}:{port}")
+            serveo_dialog.destroy()
+
+        ttk.Button(serveo_dialog, text="Aplicar", command=apply_serveo_info).pack(pady=10)
+
     
     def on_window_resize(self, event):
         """Manipula evento de redimensionamento da janela"""
