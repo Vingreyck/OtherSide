@@ -7,6 +7,7 @@ import numpy as np
 import pyautogui
 import platform
 import pyngrok.ngrok as ngrok
+from urllib.parse import urlparse
 from PIL import ImageGrab
 from queue import Queue
 import time
@@ -41,19 +42,21 @@ class RemoteServer:
     def start_ngrok_tunnel(self, port):
         """Inicia um túnel ngrok para o servidor"""
         try:
-            # Inicia um túnel HTTP para o porta especificada
-            tunnel = ngrok.connect(port, "tcp")
+            # Inicia um túnel HTTP para a porta especificada
+            tunnel = ngrok.connect(port, "http")
             public_url = tunnel.public_url
-            
-            # Extrai o endereço e porta do formato tcp://X.ngrok.io:YYYY
-            ngrok_host = public_url.replace("tcp://", "").split(":")[0]
-            ngrok_port = int(public_url.replace("tcp://", "").split(":")[1])
-            
+
+            # Extrai o endereço e porta do formato https://xxxx.ngrok-free.app
+            parsed_url = urlparse(public_url)
+            ngrok_host = parsed_url.hostname
+            ngrok_port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
+
             print(f"Túnel ngrok iniciado: {public_url}")
             print(f"Compartilhe essas informações com o cliente:")
             print(f"Host: {ngrok_host}, Porta: {ngrok_port}")
-            
+
             return ngrok_host, ngrok_port
+
         except Exception as e:
             print(f"Erro ao iniciar túnel ngrok: {e}")
             return None, None

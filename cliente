@@ -4,6 +4,7 @@ import pickle
 import struct
 import cv2
 import pyngrok.ngrok as ngrok
+from urllib.parse import urlparse
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
@@ -122,7 +123,14 @@ class RemoteClient:
         def apply_ngrok_info():
             host = ngrok_host_entry.get().strip()
             port = ngrok_port_entry.get().strip()
-            
+
+            # Se o usuário colar a URL completa, parsear
+            if host.startswith("http"):
+                parsed = urlparse(host)
+                host = parsed.hostname or host
+                if parsed.port:
+                    port = str(parsed.port)  # Sobrescreve se porta vier na URL
+
             if host and port:
                 self.host_entry.delete(0, tk.END)
                 self.host_entry.insert(0, host)
@@ -131,9 +139,8 @@ class RemoteClient:
                 self.port_entry.insert(0, port)
                 
                 self.log(f"Configurado para usar ngrok: {host}:{port}")
-            
+
             ngrok_dialog.destroy()
-        
         # Este botão deve estar dentro da função prompt_ngrok_info
         ttk.Button(ngrok_dialog, text="Aplicar", command=apply_ngrok_info).pack(pady=10)
     
