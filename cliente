@@ -3,8 +3,6 @@ import threading
 import pickle
 import struct
 import cv2
-import pyngrok.ngrok as ngrok
-from urllib.parse import urlparse
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
@@ -64,9 +62,6 @@ class RemoteClient:
         
         self.connect_button = ttk.Button(conn_frame, text="Conectar", command=self.toggle_connection)
         self.connect_button.grid(row=0, column=4, padx=5, pady=5)
-        
-        self.serveo_button = ttk.Button(conn_frame, text="Usar Serveo", command=self.prompt_serveo_info)
-        self.serveo_button.grid(row=0, column=6, padx=5, pady=5)
 
         # Frame de visualização com barra de status
         self.view_frame = ttk.LabelFrame(main_frame, text="Tela Remota")
@@ -87,7 +82,6 @@ class RemoteClient:
         # Eventos
         self.canvas.bind("<Motion>", self.on_mouse_move)
         self.canvas.bind("<Button-1>", lambda e: self.send_mouse_click("left"))
-        self.canvas.bind("<Button-3>", lambda e: self.send_mouse_click("right"))
         self.canvas.bind("<KeyPress>", self.on_key_press)
         self.canvas.focus_set()
         
@@ -98,52 +92,10 @@ class RemoteClient:
         self.log_console = scrolledtext.ScrolledText(log_frame, height=6)
         self.log_console.pack(fill=tk.BOTH)
     
-    def prompt_serveo_info(self):
-        """Solicita host e porta para conexão via Serveo"""
-        serveo_dialog = tk.Toplevel(self.root)
-        serveo_dialog.title("Conexão via Serveo")
-        serveo_dialog.geometry("400x150")
-        serveo_dialog.transient(self.root)
-        serveo_dialog.grab_set()
-
-        ttk.Label(serveo_dialog, text="Entre com as informações do túnel Serveo:").pack(pady=10)
-
-        info_frame = ttk.Frame(serveo_dialog)
-        info_frame.pack(fill=tk.X, padx=10, pady=5)
-
-        ttk.Label(info_frame, text="Host Serveo:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
-        serveo_host_entry = ttk.Entry(info_frame, width=30)
-        serveo_host_entry.insert(0, "meutunel.serveo.net")  # exemplo
-        serveo_host_entry.grid(row=0, column=1, padx=5, pady=5)
-
-        ttk.Label(info_frame, text="Porta Serveo:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
-        serveo_port_entry = ttk.Entry(info_frame, width=30)
-        serveo_port_entry.insert(0, "12345")
-        serveo_port_entry.grid(row=1, column=1, padx=5, pady=5)
-
-        def apply_serveo_info():
-            host = serveo_host_entry.get().strip()
-            port = serveo_port_entry.get().strip()
-            if host and port:
-                self.host_entry.delete(0, tk.END)
-                self.host_entry.insert(0, host)
-
-                self.port_entry.delete(0, tk.END)
-                self.port_entry.insert(0, port)
-
-                self.log(f"Configurado para usar Serveo: {host}:{port}")
-            serveo_dialog.destroy()
-
-        ttk.Button(serveo_dialog, text="Aplicar", command=apply_serveo_info).pack(pady=10)
-
-    
     def on_window_resize(self, event):
         """Manipula evento de redimensionamento da janela"""
-        # Verifica se o evento veio da janela principal e não de um widget filho
         if event.widget == self.root:
-            # Atualiza fatores de escala
             self.update_scale_factors()
-            # Se tivermos uma imagem atual, redimensione-a para se ajustar ao novo tamanho
             if self.connected and self.screen_buffer is not None:
                 self.root.after(100, lambda: self.display_screen(self.screen_buffer))
     
@@ -234,7 +186,6 @@ class RemoteClient:
             header = struct.pack("Q", len(serialized))
             self.socket.sendall(header)
             
-            # Envia em chunks
             bytes_sent = 0
             while bytes_sent < len(serialized):
                 chunk_size = min(32768, len(serialized) - bytes_sent)
@@ -261,7 +212,7 @@ class RemoteClient:
                         raise ConnectionError("Cabeçalho incompleto ou conexão fechada")
                     
                     data_size = struct.unpack("Q", header)[0]
-                    if data_size > 100000000:  # Limite de 100MB
+                    if data_size > 100000000:
                         raise ConnectionError("Tamanho de dados inválido")
                     
                     data = b""
@@ -298,23 +249,19 @@ class RemoteClient:
                 if buffer_incomplete:
                     continue
                 
-                # Processa dados recebidos
                 decoded_data = pickle.loads(data)
                 
                 if isinstance(decoded_data, dict) and "screen_size" in decoded_data:
-                    # Atualiza informações de tamanho e escala da tela
                     self.server_width, self.server_height = decoded_data["screen_size"]
                     self.log(f"Tela do servidor: {self.server_width}x{self.server_height}")
                     self.update_scale_factors()
                 elif isinstance(decoded_data, (bytes, bytearray, np.ndarray)):
-                    # É uma imagem - atualizar na interface
                     self.screen_buffer = decoded_data
                     current_time = time.time()
                     if current_time - self.last_screen_update >= 0.05:
                         self.root.after(0, self.display_screen, decoded_data)
                         self.last_screen_update = current_time
                 elif isinstance(decoded_data, (dict, str)):
-                    # É uma mensagem ou informação
                     if decoded_data != "heartbeat_ok":
                         self.log(f"Mensagem: {decoded_data}")
                 
@@ -327,12 +274,10 @@ class RemoteClient:
     
     def update_scale_factors(self):
         """Atualiza os fatores de escala com base nos tamanhos do canvas e servidor"""
-        # Obtém tamanho atual do canvas
         canvas_width = self.canvas.winfo_width()
         canvas_height = self.canvas.winfo_height()
         
         if canvas_width > 1 and canvas_height > 1 and self.server_width > 0 and self.server_height > 0:
-            # Calcular proporção para mapear as coordenadas do cliente para o servidor
             self.scale_x = self.server_width / canvas_width
             self.scale_y = self.server_height / canvas_height
             
@@ -346,42 +291,33 @@ class RemoteClient:
             return
             
         try:
-            # Converte buffer para imagem
             nparr = np.frombuffer(image_buffer, np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            # Obtém tamanho do canvas atual
             canvas_width = self.canvas.winfo_width()
             canvas_height = self.canvas.winfo_height()
             
-            # Se o canvas tem tamanho válido, redimensiona a imagem para caber nele
             if canvas_width > 10 and canvas_height > 10:
-                # Calcular proporção para manter a relação de aspecto
                 img_height, img_width = frame.shape[:2]
                 ratio = min(canvas_width/img_width, canvas_height/img_height)
                 
-                # Redimensiona a imagem para caber no canvas, mantendo a proporção
                 new_width = int(img_width * ratio)
                 new_height = int(img_height * ratio)
                 
-                # Redimensionar a imagem para o tamanho do canvas
                 resized_frame = cv2.resize(frame, (new_width, new_height))
                 
-                # Converte para formato do Tkinter
                 self.current_image = Image.fromarray(resized_frame)
                 imgtk = ImageTk.PhotoImage(image=self.current_image)
                 
-                # Exibe no canvas
                 self.canvas.delete("all")
                 self.canvas_image = self.canvas.create_image(
-                    canvas_width//2, canvas_height//2,  # Centraliza a imagem no canvas
+                    canvas_width//2, canvas_height//2,
                     anchor=tk.CENTER, 
                     image=imgtk
                 )
-                self.canvas.image = imgtk  # Mantém referência para evitar coleta de lixo
+                self.canvas.image = imgtk
                 
-                # Atualiza fatores de escala depois de ajustar a imagem
                 self.update_scale_factors()
             
         except Exception as e:
@@ -392,25 +328,19 @@ class RemoteClient:
         if self.connected:
             current_time = time.time()
             if current_time - self.last_mouse_move >= self.mouse_throttle:
-                # Obtém tamanho atual do canvas
                 canvas_width = self.canvas.winfo_width()
                 canvas_height = self.canvas.winfo_height()
                 
                 if canvas_width > 1 and canvas_height > 1 and self.current_image:
-                    # Ajustar as coordenadas considerando a posição centralizada da imagem
                     img_width, img_height = self.current_image.size
                     
-                    # Calcula a posição da imagem dentro do canvas
                     x_offset = (canvas_width - img_width) // 2
                     y_offset = (canvas_height - img_height) // 2
                     
-                    # Ajusta as coordenadas do mouse relativo à imagem, não ao canvas
                     rel_x = event.x - x_offset
                     rel_y = event.y - y_offset
                     
-                    # Apenas processar se o clique estiver dentro da imagem
                     if 0 <= rel_x < img_width and 0 <= rel_y < img_height:
-                        # Mapeamento das coordenadas do cliente para o servidor
                         server_x = int((rel_x / img_width) * self.server_width)
                         server_y = int((rel_y / img_height) * self.server_height)
                         
@@ -420,7 +350,6 @@ class RemoteClient:
     def send_mouse_click(self, button):
         """Envia clique do mouse"""
         if self.connected:
-            # Apenas enviar clique se o mouse estiver sobre a imagem
             x, y = self.canvas.winfo_pointerxy()
             x -= self.canvas.winfo_rootx()
             y -= self.canvas.winfo_rooty()
@@ -431,22 +360,18 @@ class RemoteClient:
             if self.current_image:
                 img_width, img_height = self.current_image.size
                 
-                # Calcula a posição da imagem dentro do canvas
                 x_offset = (canvas_width - img_width) // 2
                 y_offset = (canvas_height - img_height) // 2
                 
-                # Ajusta as coordenadas do mouse relativo à imagem
                 rel_x = x - x_offset
                 rel_y = y - y_offset
                 
-                # Apenas processar se o clique estiver dentro da imagem
                 if 0 <= rel_x < img_width and 0 <= rel_y < img_height:
                     self.send_data(f"mouse_click {button}")
     
     def on_key_press(self, event):
         """Envia evento de teclado com a tecla exata"""
         if self.connected:
-            # Enviar o keysym (representação da tecla) em vez do caractere
             key = event.keysym
             self.send_data(f"key {key}")
     

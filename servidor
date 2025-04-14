@@ -5,9 +5,6 @@ import struct
 import cv2
 import numpy as np
 import pyautogui
-import platform
-import pyngrok.ngrok as ngrok
-from urllib.parse import urlparse
 from PIL import ImageGrab
 from queue import Queue
 import time
@@ -39,39 +36,13 @@ class RemoteServer:
         # Desativa o failsafe do pyautogui
         pyautogui.FAILSAFE = False
         
-    def start_ngrok_tunnel(self, port):
-        """Inicia um túnel ngrok para o servidor"""
-        try:
-            # Inicia um túnel HTTP para a porta especificada
-            tunnel = ngrok.connect(port, "http")
-            public_url = tunnel.public_url
-
-            # Extrai o endereço e porta do formato https://xxxx.ngrok-free.app
-            parsed_url = urlparse(public_url)
-            ngrok_host = parsed_url.hostname
-            ngrok_port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
-
-            print(f"Túnel ngrok iniciado: {public_url}")
-            print(f"Compartilhe essas informações com o cliente:")
-            print(f"Host: {ngrok_host}, Porta: {ngrok_port}")
-
-            return ngrok_host, ngrok_port
-
-        except Exception as e:
-            print(f"Erro ao iniciar túnel ngrok: {e}")
-            return None, None
-    
-    def start_server(self, use_ngrok=False):
-        """Inicia o servidor e aceita conexões, opcionalmente usando ngrok"""
+    def start_server(self):
+        """Inicia o servidor e aceita conexões"""
         try:
             self.server_socket.bind((self.host, self.port))
             self.server_socket.listen(5)
             print(f"Servidor iniciado em {self.host}:{self.port}")
             print(f"Tamanho da tela: {self.screen_size}")
-            
-            # Inicia túnel ngrok se requisitado
-            if use_ngrok:
-                self.start_ngrok_tunnel(self.port)
             
             # Thread para processamento de comandos
             command_thread = threading.Thread(target=self.process_commands)
@@ -105,23 +76,19 @@ class RemoteServer:
             screen_thread.start()
             
             while self.running:
-                # Recebe comandos do cliente
                 command = self.receive_data(client_socket)
                 
                 if not command:
                     print("Comando vazio ou conexão fechada.")
                     break
                 
-                # Processamento de diferentes tipos de comandos
                 if isinstance(command, str):
                     if command == "get_screen_size":
-                        # Envia o tamanho real da tela do servidor para o cliente
                         self.send_data(client_socket, {"screen_size": self.screen_size})
                     
                     elif command.startswith('mouse_move'):
                         try:
                             _, x, y = command.split()
-                            # As coordenadas já vêm mapeadas do cliente
                             self.command_queue.put(('mouse_move', (int(float(x)), int(float(y)))))
                         except Exception as e:
                             print(f"Erro em mouse_move: {e}")
@@ -162,18 +129,14 @@ class RemoteServer:
                 current_time = time.time()
                 if (current_time - last_capture_time) >= self.screenshot_interval:
                     try:
-                        # Captura tela
                         screen = ImageGrab.grab()
                         screen_np = np.array(screen)
                         screen_np = cv2.cvtColor(screen_np, cv2.COLOR_RGB2BGR)
                         
-                        # Redimensiona
                         scaled = cv2.resize(screen_np, (0,0), fx=self.scale_factor, fy=self.scale_factor)
                         
-                        # Comprime
                         _, buffer = cv2.imencode('.jpg', scaled, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
                         
-                        # Envia dados
                         success = self.send_data(client_socket, buffer)
                         if not success:
                             break
@@ -202,13 +165,10 @@ class RemoteServer:
                     pyautogui.click(button=data, _pause=False)
                 
                 elif command_type == 'key':
-                    # Mapear teclas especiais se necessário
                     try:
                         if len(data) == 1:
-                            # É um caractere simples
                             pyautogui.press(data.lower(), _pause=False)
                         else:
-                            # Pode ser uma tecla especial
                             key_mapping = {
                                 'space': 'space',
                                 'Return': 'enter',
@@ -257,7 +217,6 @@ class RemoteServer:
                 self.command_queue.task_done()
             
             except Exception as e:
-                # Timeout ou fila vazia
                 pass
     
     def send_data(self, connection, data):
@@ -283,7 +242,7 @@ class RemoteServer:
                 
             data_size = struct.unpack("Q", header)[0]
             
-            if data_size > 100000000:  # Limite de 100MB
+            if data_size > 100000000:
                 return None
             
             data = b""
@@ -320,11 +279,5 @@ class RemoteServer:
         self.server_socket.close()
 
 if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='Servidor de controle remoto')
-    parser.add_argument('--ngrok', action='store_true', help='Usar túnel ngrok para acesso remoto')
-    args = parser.parse_args()
-    
     server = RemoteServer()
-    server.start_server(use_ngrok=args.ngrok)
+    server.start_server()
